@@ -23,6 +23,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
   bool _isLoading = false;
   bool _isEmailValid = true;
   bool _isPasswordValid = true;
+  bool _obscurePassword = true; // Added to toggle password visibility
 
   @override
   void initState() {
@@ -276,16 +277,27 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
 
                     const SizedBox(height: 20),
 
-                    // 🔹 PASSWORD FIELD
+                    // 🔹 PASSWORD FIELD with show/hide icon
                     TextField(
                       controller: passwordController,
-                      obscureText: true,
+                      obscureText: _obscurePassword,
                       decoration: InputDecoration(
                         labelText: 'Password',
                         hintText: 'Enter your password',
                         prefixIcon: Icon(
                           Icons.lock,
                           color: Colors.deepPurple.shade800,
+                        ),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword ? Icons.visibility : Icons.visibility_off,
+                            color: Colors.deepPurple.shade800,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _obscurePassword = !_obscurePassword;
+                            });
+                          },
                         ),
                         isDense: false,
                         contentPadding: const EdgeInsets.symmetric(vertical: 16),
