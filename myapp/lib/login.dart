@@ -251,8 +251,8 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                     const Text(
                       'Sign in to continue',
                       style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey,
+                        fontSize: 16,
+                        color: Color.fromARGB(255, 44, 17, 17),
                       ),
                     ),
                     const SizedBox(height: 25),
