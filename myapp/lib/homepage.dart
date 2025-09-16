@@ -7,7 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'login.dart';
 import 'newsfeed.dart';
-import 'ProfileImagesPage.dart'; // Added import for ProfileImagesPage
+import 'ProfileImagesPage.dart';
 import 'package:intl/intl.dart';
 import 'supabase.dart' as sb;
 
@@ -137,8 +137,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         final User? user = _auth.currentUser;
         if (user != null) {
           File imageFile = File(pickedFile.path);
-          
-          final String downloadUrl = await sb.uploadImage(imageFile);
+          // Modified: Include UID and timestamp in file name
+          final String fileName = '${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+          final String downloadUrl = await sb.uploadImage(imageFile, fileName: fileName);
           
           await _updateField('profile_image', downloadUrl);
           
@@ -395,7 +396,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   
                   const SizedBox(height: 30),
                   
-                  // All Photos Button
                   Center(
                     child: ElevatedButton.icon(
                       onPressed: () {

@@ -28,14 +28,30 @@ class _ProfileImagesPageState extends State<ProfileImagesPage> {
 
   Future<void> _fetchImages() async {
     try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        Fluttertoast.showToast(
+          msg: 'Please log in to view images',
+          toastLength: Toast.LENGTH_LONG,
+          backgroundColor: Colors.red,
+          textColor: Colors.white,
+        );
+        setState(() {
+          isLoading = false;
+        });
+        return;
+      }
+
       final response = await sb.supabase.storage
           .from('profile-images')
           .list();
       
-      final imageList = response.map((file) => {
-            'url': sb.supabase.storage.from('profile-images').getPublicUrl(file.name),
-            'name': file.name,
-          }).toList();
+      final imageList = response
+          .where((file) => file.name.startsWith(user.uid)) // Filter by UID
+          .map((file) => {
+                'url': sb.supabase.storage.from('profile-images').getPublicUrl(file.name),
+                'name': file.name,
+              }).toList();
 
       setState(() {
         images = imageList;
@@ -57,7 +73,6 @@ class _ProfileImagesPageState extends State<ProfileImagesPage> {
 
   Future<void> _downloadImage(String imageUrl, String fileName) async {
     try {
-      // Use temporary directory to avoid permission issues
       final directory = await getTemporaryDirectory();
       final filePath = '${directory.path}/$fileName';
       final response = await http.get(Uri.parse(imageUrl));
