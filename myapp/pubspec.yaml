@@ -5,25 +5,26 @@ publish_to: "none"
 version: 1.0.0+1
 
 environment:
-  sdk: ">=3.9.0 <4.0.0"
+  sdk: ">=3.4.0 <4.0.0" # Updated to a more recent, stable SDK range
 
 dependencies:
   flutter:
     sdk: flutter
-  firebase_core: ^3.15.2
-  firebase_auth: ^5.6.2
-  cloud_firestore: ^5.6.0
-  firebase_storage: ^12.3.3  # Keep Firebase Storage if needed for other files
-  fluttertoast: ^8.2.2
-  intl: ^0.18.1
-  image_picker: ^1.0.4       # For selecting images from gallery/camera
-  cached_network_image: ^3.3.0 # For efficient image loading
-  supabase_flutter: ^2.1.0   # Add Supabase for image storage
+  firebase_core: ^3.6.0 # Updated to latest compatible version
+  firebase_auth: ^5.3.1 # Updated to latest compatible version
+  cloud_firestore: ^5.4.4 # Updated to latest compatible version
+  firebase_storage: ^12.4.0 # Updated to latest compatible version
+  fluttertoast: ^8.2.8 # Updated to latest compatible version
+  intl: ^0.19.0 # Updated to latest compatible version
+  image_picker: ^1.1.2 # Updated to latest compatible version
+  cached_network_image: ^3.4.1 # Updated to latest compatible version
+  supabase_flutter: ^2.7.0 # Updated to latest compatible version
+  firebase_app_check: ^0.3.2 # Added to resolve App Check error
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^5.0.0 # Updated to latest compatible version
 
 flutter:
-  uses-material-design: true  
+  uses-material-design: true

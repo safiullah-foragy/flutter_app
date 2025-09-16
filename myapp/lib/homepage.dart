@@ -1,13 +1,12 @@
-// main.dart
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'login.dart';
+import 'newsfeed.dart'; // Added import for NewsfeedPage
 import 'package:intl/intl.dart';
 import 'supabase.dart' as sb; // Import Supabase for image handling
 
@@ -264,10 +263,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Profile Header with Image - Enhanced with larger size and stylish border
+                  // Profile Header with Image in the middle top
                   Center(
                     child: Column(
                       children: [
+                        // Profile Photo in the center
                         Container(
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
@@ -287,7 +287,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           child: Stack(
                             children: [
                               CircleAvatar(
-                                radius: 70, // Increased size
+                                radius: 70,
                                 backgroundColor: Colors.grey[300],
                                 backgroundImage: userData?['profile_image'] != null
                                     ? CachedNetworkImageProvider(userData!['profile_image']) as ImageProvider
@@ -313,32 +313,70 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             ],
                           ),
                         ),
+                        
                         const SizedBox(height: 16),
-                        ElevatedButton.icon(
-                          onPressed: isUploading ? null : _uploadProfileImage,
-                          icon: const Icon(Icons.camera_alt, size: 18),
-                          label: const Text('Upload Profile Photo'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          ),
+                        
+                        // Buttons row - Newsfeed on left, Upload on right
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            // Newsfeed Button on left
+                            ElevatedButton.icon(
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (_) => NewsfeedPage()),
+                                );
+                              },
+                              icon: const Icon(Icons.feed, size: 18),
+                              label: const Text('Newsfeed'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(15.0),
+                                ),
+                              ),
+                            ),
+                            
+                            const SizedBox(width: 16),
+                            
+                            // Upload Photo Button on right
+                            ElevatedButton.icon(
+                              onPressed: isUploading ? null : _uploadProfileImage,
+                              icon: const Icon(Icons.camera_alt, size: 18),
+                              label: const Text('Upload Photo'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(15.0),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
+                        
                         const SizedBox(height: 16),
+                        
                         // Animated name with slide effect
                         SlideTransition(
                           position: _slideAnimation,
                           child: Text(
                             userData?['name'] ?? 'No Name Provided',
                             style: const TextStyle(
-                              fontSize: 28, // Slightly larger font
+                              fontSize: 28,
                               fontWeight: FontWeight.bold,
-                              color: Color.fromARGB(255, 199, 137, 137),
+                              color: Color.fromARGB(255, 226, 146, 146),
                             ),
                             textAlign: TextAlign.center,
                           ),
                         ),
+                        
                         const SizedBox(height: 8),
+                        
                         Text(
                           userData?['email'] ?? 'No Email Provided',
                           style: TextStyle(
