@@ -6,9 +6,10 @@ import 'package:fluttertoast/fluttertoast.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'login.dart';
-import 'newsfeed.dart'; // Added import for NewsfeedPage
+import 'newsfeed.dart';
+import 'ProfileImagesPage.dart'; // Added import for ProfileImagesPage
 import 'package:intl/intl.dart';
-import 'supabase.dart' as sb; // Import Supabase for image handling
+import 'supabase.dart' as sb;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -26,7 +27,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool isUploading = false;
   final Map<String, TextEditingController> _controllers = {};
   
-  // Animation controller for name sliding animation
   late AnimationController _animationController;
   late Animation<Offset> _slideAnimation;
 
@@ -36,13 +36,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _fetchUserData();
     _updateLastLogin();
     
-    // Initialize animation controller
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
     
-    // Create sliding animation
     _slideAnimation = Tween<Offset>(
       begin: const Offset(-1, 0),
       end: Offset.zero,
@@ -51,7 +49,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       curve: Curves.easeOut,
     ));
     
-    // Start animation after a short delay
     Future.delayed(const Duration(milliseconds: 500), () {
       _animationController.forward();
     });
@@ -60,7 +57,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void dispose() {
     _animationController.dispose();
-    // Dispose all controllers
     _controllers.forEach((key, controller) {
       controller.dispose();
     });
@@ -87,7 +83,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           setState(() {
             userData = userDoc.data() as Map<String, dynamic>;
             
-            // Initialize controllers with current values
             _controllers['name'] = TextEditingController(text: userData?['name'] ?? '');
             _controllers['dob'] = TextEditingController(text: userData?['dob'] ?? '');
             _controllers['current_job'] = TextEditingController(text: userData?['current_job'] ?? '');
@@ -143,10 +138,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         if (user != null) {
           File imageFile = File(pickedFile.path);
           
-          // Upload to Supabase Storage instead of Firebase
           final String downloadUrl = await sb.uploadImage(imageFile);
           
-          // Update user document with image URL in Firebase
           await _updateField('profile_image', downloadUrl);
           
           Fluttertoast.showToast(msg: 'Profile image updated successfully');
@@ -263,11 +256,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Profile Header with Image in the middle top
                   Center(
                     child: Column(
                       children: [
-                        // Profile Photo in the center
                         Container(
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
@@ -316,11 +307,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         
                         const SizedBox(height: 16),
                         
-                        // Buttons row - Newsfeed on left, Upload on right
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceAround,
                           children: [
-                            // Newsfeed Button on left
                             ElevatedButton.icon(
                               onPressed: () {
                                 Navigator.push(
@@ -342,7 +331,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             
                             const SizedBox(width: 16),
                             
-                            // Upload Photo Button on right
                             ElevatedButton.icon(
                               onPressed: isUploading ? null : _uploadProfileImage,
                               icon: const Icon(Icons.camera_alt, size: 18),
@@ -361,7 +349,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         
                         const SizedBox(height: 16),
                         
-                        // Animated name with slide effect
                         SlideTransition(
                           position: _slideAnimation,
                           child: Text(
@@ -391,23 +378,44 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   
                   const SizedBox(height: 24),
                   
-                  // Personal Information Section
                   _buildSectionHeader('Personal Information'),
                   _buildEditableInfoItem('Full Name', userData?['name'] ?? 'Not provided', 'name'),
                   _buildInfoItem('Email', userData?['email'] ?? 'Not provided'),
                   _buildEditableInfoItem('Date of Birth', userData?['dob'] ?? 'Not provided', 'dob', isDate: true),
                   
-                  // Professional Information Section
                   _buildSectionHeader('Professional Information'),
                   _buildEditableInfoItem('Current Job', userData?['current_job'] ?? 'Not provided', 'current_job'),
                   _buildEditableInfoItem('Experience', userData?['experience'] ?? 'Not provided', 'experience'),
                   _buildEditableInfoItem('Session', userData?['session'] ?? 'Not provided', 'session'),
                   
-                  // Account Information Section
                   _buildSectionHeader('Account Information'),
                   _buildInfoItem('User ID', user?.uid ?? 'Not available'),
                   _buildInfoItem('Account Created', userData?['created_at'] ?? 'Not available'),
                   _buildInfoItem('Last Login', userData?['last_login'] ?? 'Not available'),
+                  
+                  const SizedBox(height: 30),
+                  
+                  // All Photos Button
+                  Center(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const ProfileImagesPage()),
+                        );
+                      },
+                      icon: const Icon(Icons.photo_library, size: 18),
+                      label: const Text('All Photos'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(15.0),
+                        ),
+                      ),
+                    ),
+                  ),
                   
                   const SizedBox(height: 30),
                 ],
