@@ -1,9 +1,15 @@
+// main.dart
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:fluttertoast/fluttertoast.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'login.dart';
 import 'package:intl/intl.dart';
+import 'supabase.dart' as sb; // Import Supabase for image handling
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -15,8 +21,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final ImagePicker _imagePicker = ImagePicker();
   Map<String, dynamic>? userData;
   bool isLoading = true;
+  bool isUploading = false;
   final Map<String, TextEditingController> _controllers = {};
 
   @override
@@ -65,7 +73,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _updateField(String field, String value) async {
+  Future<void> _updateField(String field, dynamic value) async {
     try {
       final User? user = _auth.currentUser;
       if (user != null) {
@@ -77,24 +85,60 @@ class _HomePageState extends State<HomePage> {
           userData?[field] = value;
         });
         
-        Fluttertoast.showToast(msg: '$field updated successfully');
+        Fluttertoast.showToast(msg: '${_getFieldDisplayName(field)} updated successfully');
       }
     } catch (e) {
-      Fluttertoast.showToast(msg: 'Error updating $field: $e');
+      Fluttertoast.showToast(msg: 'Error updating ${_getFieldDisplayName(field)}: $e');
+    }
+  }
+
+  Future<void> _uploadProfileImage() async {
+    try {
+      final XFile? pickedFile = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+        maxWidth: 800,
+        maxHeight: 800,
+      );
+      
+      if (pickedFile != null) {
+        setState(() {
+          isUploading = true;
+        });
+        
+        final User? user = _auth.currentUser;
+        if (user != null) {
+          File imageFile = File(pickedFile.path);
+          
+          // Upload to Supabase Storage instead of Firebase
+          final String downloadUrl = await sb.uploadImage(imageFile);
+          
+          // Update user document with image URL in Firebase
+          await _updateField('profile_image', downloadUrl);
+          
+          Fluttertoast.showToast(msg: 'Profile image updated successfully');
+        }
+      }
+    } catch (e) {
+      print('Error uploading image: $e');
+      Fluttertoast.showToast(msg: 'Error uploading image: $e');
+    } finally {
+      setState(() {
+        isUploading = false;
+      });
     }
   }
 
   void _showEditDialog(String field, String currentValue) {
+    final controller = TextEditingController(text: currentValue);
+    
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
           title: Text('Edit ${_getFieldDisplayName(field)}'),
           content: TextField(
-            controller: TextEditingController(text: currentValue),
-            onChanged: (value) {
-              _controllers[field]?.text = value;
-            },
+            controller: controller,
             decoration: InputDecoration(
               hintText: 'Enter your ${_getFieldDisplayName(field).toLowerCase()}',
             ),
@@ -106,7 +150,9 @@ class _HomePageState extends State<HomePage> {
             ),
             TextButton(
               onPressed: () {
-                _updateField(field, _controllers[field]?.text ?? currentValue);
+                if (controller.text.trim().isNotEmpty) {
+                  _updateField(field, controller.text.trim());
+                }
                 Navigator.of(context).pop();
               },
               child: const Text('Save'),
@@ -117,21 +163,21 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _showDatePicker() {
-    showDatePicker(
+  Future<void> _showDatePicker() async {
+    final DateTime? pickedDate = await showDatePicker(
       context: context,
       initialDate: DateTime.now(),
       firstDate: DateTime(1900),
       lastDate: DateTime.now(),
-    ).then((pickedDate) {
-      if (pickedDate != null) {
-        final formattedDate = DateFormat('yyyy-MM-dd').format(pickedDate);
-        _updateField('dob', formattedDate);
-        setState(() {
-          _controllers['dob']?.text = formattedDate;
-        });
-      }
-    });
+    );
+    
+    if (pickedDate != null) {
+      final formattedDate = DateFormat('yyyy-MM-dd').format(pickedDate);
+      await _updateField('dob', formattedDate);
+      setState(() {
+        _controllers['dob']?.text = formattedDate;
+      });
+    }
   }
 
   String _getFieldDisplayName(String field) {
@@ -141,6 +187,7 @@ class _HomePageState extends State<HomePage> {
       case 'current_job': return 'Current Job';
       case 'experience': return 'Experience';
       case 'session': return 'Session';
+      case 'profile_image': return 'Profile Image';
       default: return field;
     }
   }
@@ -161,15 +208,26 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('User Profile'),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-              Navigator.pushReplacement(
-                context, 
-                MaterialPageRoute(builder: (_) => const LoginPage())
-              );
+              try {
+                await FirebaseAuth.instance.signOut();
+                Navigator.pushReplacement(
+                  context, 
+                  MaterialPageRoute(builder: (_) => const LoginPage())
+                );
+              } catch (e) {
+                Fluttertoast.showToast(
+                  msg: 'Error signing out: $e',
+                  toastLength: Toast.LENGTH_SHORT,
+                  gravity: ToastGravity.BOTTOM,
+                  backgroundColor: Colors.red,
+                );
+              }
             },
           ),
         ],
@@ -181,13 +239,48 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Profile Header
+                  // Profile Header with Image
                   Center(
                     child: Column(
                       children: [
-                        const CircleAvatar(
-                          radius: 50,
-                          child: Icon(Icons.person, size: 40),
+                        Stack(
+                          children: [
+                            CircleAvatar(
+                              radius: 50,
+                              backgroundColor: Colors.grey[300],
+                              backgroundImage: userData?['profile_image'] != null
+                                  ? CachedNetworkImageProvider(userData!['profile_image']) as ImageProvider
+                                  : null,
+                              child: userData?['profile_image'] == null
+                                  ? const Icon(Icons.person, size: 40, color: Colors.grey)
+                                  : null,
+                            ),
+                            if (isUploading)
+                              Positioned.fill(
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(0.5),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Center(
+                                    child: CircularProgressIndicator(
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        ElevatedButton.icon(
+                          onPressed: isUploading ? null : _uploadProfileImage,
+                          icon: const Icon(Icons.camera_alt, size: 18),
+                          label: const Text('Upload Profile Photo'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          ),
                         ),
                         const SizedBox(height: 16),
                         Text(
@@ -196,6 +289,7 @@ class _HomePageState extends State<HomePage> {
                             fontSize: 24,
                             fontWeight: FontWeight.bold,
                           ),
+                          textAlign: TextAlign.center,
                         ),
                         Text(
                           userData?['email'] ?? 'No Email Provided',
@@ -203,6 +297,7 @@ class _HomePageState extends State<HomePage> {
                             fontSize: 16,
                             color: Colors.grey[600],
                           ),
+                          textAlign: TextAlign.center,
                         ),
                       ],
                     ),
@@ -262,7 +357,16 @@ class _HomePageState extends State<HomePage> {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
-          Expanded(child: Text(value)),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(
+                color: value == 'Not provided' || value == 'Not available' 
+                    ? Colors.grey 
+                    : Colors.black,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -281,9 +385,16 @@ class _HomePageState extends State<HomePage> {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
-          Expanded(child: Text(value)),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(
+                color: value == 'Not provided' ? Colors.grey : Colors.black,
+              ),
+            ),
+          ),
           IconButton(
-            icon: const Icon(Icons.edit, size: 18),
+            icon: const Icon(Icons.edit, size: 18, color: Colors.blue),
             onPressed: () {
               if (isDate) {
                 _showDatePicker();
