@@ -18,7 +18,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final ImagePicker _imagePicker = ImagePicker();
@@ -26,12 +26,46 @@ class _HomePageState extends State<HomePage> {
   bool isLoading = true;
   bool isUploading = false;
   final Map<String, TextEditingController> _controllers = {};
+  
+  // Animation controller for name sliding animation
+  late AnimationController _animationController;
+  late Animation<Offset> _slideAnimation;
 
   @override
   void initState() {
     super.initState();
     _fetchUserData();
     _updateLastLogin();
+    
+    // Initialize animation controller
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    );
+    
+    // Create sliding animation
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(-1, 0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeOut,
+    ));
+    
+    // Start animation after a short delay
+    Future.delayed(const Duration(milliseconds: 500), () {
+      _animationController.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    // Dispose all controllers
+    _controllers.forEach((key, controller) {
+      controller.dispose();
+    });
+    super.dispose();
   }
 
   Future<void> _updateLastLogin() async {
@@ -193,15 +227,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
-  void dispose() {
-    // Dispose all controllers
-    _controllers.forEach((key, controller) {
-      controller.dispose();
-    });
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final user = _auth.currentUser;
     
@@ -239,39 +264,56 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Profile Header with Image
+                  // Profile Header with Image - Enhanced with larger size and stylish border
                   Center(
                     child: Column(
                       children: [
-                        Stack(
-                          children: [
-                            CircleAvatar(
-                              radius: 50,
-                              backgroundColor: Colors.grey[300],
-                              backgroundImage: userData?['profile_image'] != null
-                                  ? CachedNetworkImageProvider(userData!['profile_image']) as ImageProvider
-                                  : null,
-                              child: userData?['profile_image'] == null
-                                  ? const Icon(Icons.person, size: 40, color: Colors.grey)
-                                  : null,
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.blue,
+                              width: 4.0,
                             ),
-                            if (isUploading)
-                              Positioned.fill(
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withOpacity(0.5),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Center(
-                                    child: CircularProgressIndicator(
-                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.blue.withOpacity(0.3),
+                                blurRadius: 10,
+                                spreadRadius: 2,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: Stack(
+                            children: [
+                              CircleAvatar(
+                                radius: 70, // Increased size
+                                backgroundColor: Colors.grey[300],
+                                backgroundImage: userData?['profile_image'] != null
+                                    ? CachedNetworkImageProvider(userData!['profile_image']) as ImageProvider
+                                    : null,
+                                child: userData?['profile_image'] == null
+                                    ? const Icon(Icons.person, size: 60, color: Colors.grey)
+                                    : null,
+                              ),
+                              if (isUploading)
+                                Positioned.fill(
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.5),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Center(
+                                      child: CircularProgressIndicator(
+                                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 16),
                         ElevatedButton.icon(
                           onPressed: isUploading ? null : _uploadProfileImage,
                           icon: const Icon(Icons.camera_alt, size: 18),
@@ -283,19 +325,25 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                         const SizedBox(height: 16),
-                        Text(
-                          userData?['name'] ?? 'No Name Provided',
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
+                        // Animated name with slide effect
+                        SlideTransition(
+                          position: _slideAnimation,
+                          child: Text(
+                            userData?['name'] ?? 'No Name Provided',
+                            style: const TextStyle(
+                              fontSize: 28, // Slightly larger font
+                              fontWeight: FontWeight.bold,
+                              color: Color.fromARGB(255, 199, 137, 137),
+                            ),
+                            textAlign: TextAlign.center,
                           ),
-                          textAlign: TextAlign.center,
                         ),
+                        const SizedBox(height: 8),
                         Text(
                           userData?['email'] ?? 'No Email Provided',
                           style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
+                            fontSize: 17,
+                            color: const Color.fromARGB(255, 60, 14, 14),
                           ),
                           textAlign: TextAlign.center,
                         ),
