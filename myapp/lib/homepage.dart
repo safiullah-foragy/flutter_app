@@ -29,12 +29,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   
   late AnimationController _animationController;
   late Animation<Offset> _slideAnimation;
+  List<Map<String, dynamic>> userPosts = [];
 
   @override
   void initState() {
     super.initState();
     _fetchUserData();
     _updateLastLogin();
+    _fetchUserPosts();
     
     _animationController = AnimationController(
       vsync: this,
@@ -101,6 +103,31 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<void> _fetchUserPosts() async {
+    try {
+      final User? user = _auth.currentUser;
+      if (user != null) {
+        QuerySnapshot postsSnapshot = await _firestore
+            .collection('posts')
+            .where('user_id', isEqualTo: user.uid)
+            .orderBy('timestamp', descending: true)
+            .get();
+            
+        setState(() {
+          userPosts = postsSnapshot.docs.map((doc) {
+            Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+            return {
+              'id': doc.id,
+              ...data
+            };
+          }).toList();
+        });
+      }
+    } catch (e) {
+      print('Error fetching user posts: $e');
+    }
+  }
+
   Future<void> _updateField(String field, dynamic value) async {
     try {
       final User? user = _auth.currentUser;
@@ -137,7 +164,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         final User? user = _auth.currentUser;
         if (user != null) {
           File imageFile = File(pickedFile.path);
-          // Modified: Include UID and timestamp in file name
           final String fileName = '${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
           final String downloadUrl = await sb.uploadImage(imageFile, fileName: fileName);
           
@@ -219,6 +245,28 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<void> _deletePost(String postId) async {
+    try {
+      await _firestore.collection('posts').doc(postId).delete();
+      Fluttertoast.showToast(msg: 'Post deleted successfully');
+      _fetchUserPosts();
+    } catch (e) {
+      Fluttertoast.showToast(msg: 'Error deleting post: $e');
+    }
+  }
+
+  Future<void> _togglePostPrivacy(String postId, bool currentPrivacy) async {
+    try {
+      await _firestore.collection('posts').doc(postId).update({
+        'is_private': !currentPrivacy,
+      });
+      Fluttertoast.showToast(msg: 'Post privacy updated');
+      _fetchUserPosts();
+    } catch (e) {
+      Fluttertoast.showToast(msg: 'Error updating post privacy: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = _auth.currentUser;
@@ -242,7 +290,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                 Fluttertoast.showToast(
                   msg: 'Error signing out: $e',
                   toastLength: Toast.LENGTH_SHORT,
-                  gravity: ToastGravity.BOTTOM,
                   backgroundColor: Colors.red,
                 );
               }
@@ -315,7 +362,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                               onPressed: () {
                                 Navigator.push(
                                   context,
-                                  MaterialPageRoute(builder: (_) => NewsfeedPage()),
+                                  MaterialPageRoute(builder: (_) => const NewsfeedPage()),
                                 );
                               },
                               icon: const Icon(Icons.feed, size: 18),
@@ -367,9 +414,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         
                         Text(
                           userData?['email'] ?? 'No Email Provided',
-                          style: TextStyle(
+                          style: const TextStyle(
                             fontSize: 17,
-                            color: const Color.fromARGB(255, 60, 14, 14),
+                            color: Color.fromARGB(255, 60, 14, 14),
                           ),
                           textAlign: TextAlign.center,
                         ),
@@ -418,6 +465,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   ),
                   
                   const SizedBox(height: 30),
+                  
+                  if (userPosts.isNotEmpty) ...[
+                    _buildSectionHeader('Your Posts'),
+                    ...userPosts.map((post) => _buildPostItem(post)).toList(),
+                  ],
                 ],
               ),
             ),
@@ -498,6 +550,73 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             },
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildPostItem(Map<String, dynamic> post) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  DateFormat('MMM dd, yyyy - HH:mm').format(
+                    DateTime.fromMillisecondsSinceEpoch(post['timestamp']),
+                  ),
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        post['is_private'] ? Icons.lock_outline : Icons.public,
+                        size: 18,
+                      ),
+                      onPressed: () => _togglePostPrivacy(post['id'], post['is_private']),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                      onPressed: () => _deletePost(post['id']),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (post['text'] != null && post['text'].isNotEmpty)
+              Text(post['text']),
+            const SizedBox(height: 8),
+            if (post['image_url'] != null && post['image_url'].isNotEmpty)
+              CachedNetworkImage(
+                imageUrl: post['image_url'],
+                placeholder: (context, url) => Container(
+                  height: 200,
+                  child: const Center(child: CircularProgressIndicator()),
+                ),
+                errorWidget: (context, url, error) => const Icon(Icons.error),
+              ),
+            if (post['video_url'] != null && post['video_url'].isNotEmpty)
+              const Icon(Icons.video_library, size: 50),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.favorite, color: Colors.red, size: 16),
+                const SizedBox(width: 4),
+                Text('${post['likes_count'] ?? 0}'),
+                const SizedBox(width: 16),
+                Icon(Icons.comment, color: Colors.blue, size: 16),
+                const SizedBox(width: 4),
+                Text('${post['comments_count'] ?? 0}'),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -20,9 +20,12 @@ dependencies:
   cached_network_image: ^3.4.1
   supabase_flutter: ^2.8.0
   firebase_app_check: ^0.3.2
-  http: ^1.2.2 # Added for image downloading
-  path_provider: ^2.1.5 # Added for file storage
-  permission_handler: ^11.3.3 # Added for storage permissions
+  http: ^1.2.2
+  path_provider: ^2.1.5
+  permission_handler: ^11.3.3
+  path: ^1.8.3
+  video_player: ^2.9.1
+  chewie: ^1.7.1
 
 dev_dependencies:
   flutter_test:

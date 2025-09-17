@@ -16,17 +16,16 @@ Future<void> initializeSupabase() async {
 
 SupabaseClient get supabase => Supabase.instance.client;
 
-Future<String> uploadImage(File imageFile, {String? fileName}) async {
+Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'profile-images'}) async {
   try {
-    // Use provided fileName or generate a default one with the original file extension
-    final String finalFileName = fileName ?? 'profile_${DateTime.now().millisecondsSinceEpoch}${extension(imageFile.path)}';
+    final String finalFileName = fileName ?? '${folder}_${DateTime.now().millisecondsSinceEpoch}${extension(imageFile.path)}';
     
     await supabase.storage
-        .from('profile-images')
+        .from(folder)
         .upload(finalFileName, imageFile);
     
     final String publicUrl = supabase.storage
-        .from('profile-images')
+        .from(folder)
         .getPublicUrl(finalFileName);
     
     return publicUrl;
@@ -34,4 +33,12 @@ Future<String> uploadImage(File imageFile, {String? fileName}) async {
     print('Error uploading to Supabase: $e');
     throw Exception('Failed to upload image: $e');
   }
+}
+
+Future<String> uploadVideo(File videoFile, {String? fileName}) async {
+  return uploadImage(videoFile, fileName: fileName, folder: 'post-videos');
+}
+
+Future<String> uploadPostImage(File imageFile, {String? fileName}) async {
+  return uploadImage(imageFile, fileName: fileName, folder: 'post-images');
 }
