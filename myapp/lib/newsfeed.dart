@@ -58,6 +58,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   bool isLoading = true;
   bool hasConnection = true;
+  bool _showComposer = true;
 
   @override
   void initState() {
@@ -475,7 +476,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           .collection('comments')
           .add({
         'user_id': user.uid,
-  'text': controller.text,
+        'text': controller.text,
         'timestamp': timestamp,
       });
 
@@ -649,8 +650,17 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     try {
       // If a controller already exists, don't re-create
       if (videoPlayerControllers[postId] != null || videoControllers[postId] != null) return;
+      // Resolve an accessible URL (public or signed) before initializing.
+      final resolvedUrl = await _resolveVideoUrl(url);
+      if (resolvedUrl == null) {
+        print('Video URL not accessible or returned non-200: $url');
+        videoPlayerControllers[postId] = null;
+        videoControllers[postId] = null;
+        if (mounted) setState(() {});
+        return;
+      }
 
-  final vpc = VideoPlayerController.networkUrl(Uri.parse(url));
+      final vpc = VideoPlayerController.networkUrl(Uri.parse(resolvedUrl));
       videoPlayerControllers[postId] = vpc;
       // start initialize and wait
       await vpc.initialize();
@@ -674,6 +684,61 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       videoPlayerControllers[postId] = null;
       videoControllers[postId] = null;
       if (mounted) setState(() {});
+    }
+  }
+
+  /// Check if URL responds with 200 on a HEAD request. Returns false on error
+  /// or non-200 responses. This helps avoid initializing ExoPlayer on bad URLs.
+  Future<bool> _validateUrlExists(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      final client = HttpClient();
+      client.userAgent = 'MyApp/1.0';
+      final req = await client.openUrl('HEAD', uri);
+      final resp = await req.close();
+      final status = resp.statusCode;
+      final ok = status >= 200 && status < 300;
+      print('HEAD $url -> $status');
+      client.close(force: true);
+      return ok;
+    } catch (e) {
+      print('URL validation error for $url: $e');
+      return false;
+    }
+  }
+
+  /// If the provided URL is a Supabase storage public URL that returns non-200,
+  /// attempt to create a signed URL and return an accessible URL or null.
+  Future<String?> _resolveVideoUrl(String url) async {
+    // First check the provided URL directly
+    final ok = await _validateUrlExists(url);
+    if (ok) return url;
+
+    try {
+      // Look for the Supabase public storage URL pattern
+      final marker = '/storage/v1/object/public/';
+      final idx = url.indexOf(marker);
+      if (idx == -1) return null;
+
+      final tail = url.substring(idx + marker.length); // bucket/path/to/object
+      final parts = tail.split('/');
+      if (parts.length < 2) return null;
+      final bucket = parts[0];
+      final objectPath = parts.sublist(1).join('/');
+
+      // Try to create a signed URL (1 hour). createSignedUrl typically
+      // returns a String URL in the supabase client.
+      final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
+      final String? signedUrl = signed?.toString();
+      print('createSignedUrl result for $objectPath -> $signedUrl');
+      if (signedUrl == null) return null;
+      final ok2 = await _validateUrlExists(signedUrl);
+      print('HEAD on signed URL -> $ok2');
+      if (ok2) return signedUrl;
+      return null;
+    } catch (e) {
+      print('Error resolving supabase signed url for $url: $e');
+      return null;
     }
   }
 
@@ -711,11 +776,15 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       canPop: true,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Newsfeed'),
           backgroundColor: Colors.blue,
           foregroundColor: Colors.white,
           toolbarHeight: 48,
           actions: [
+            IconButton(
+              tooltip: 'Toggle composer',
+              icon: Icon(_showComposer ? Icons.expand_less : Icons.expand_more),
+              onPressed: () => setState(() => _showComposer = !_showComposer),
+            ),
             IconButton(
               tooltip: 'Messages',
               icon: const Icon(Icons.message),
@@ -735,115 +804,116 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         ),
         body: Column(
           children: [
-            Card(
-              margin: const EdgeInsets.all(8.0),
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    GestureDetector(
-                      onTap: () {
-                        if (userData != null && _auth.currentUser != null) {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => SeeProfileFromNewsfeed(userId: _auth.currentUser!.uid),
-                            ),
-                          );
-                        }
-                      },
-                      child: Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 20,
-                            backgroundColor: Colors.grey[300],
-                            backgroundImage: userData?['profile_image'] != null
-                                ? CachedNetworkImageProvider(userData!['profile_image'])
-                                : null,
-                            child: userData?['profile_image'] == null
-                                ? const Icon(Icons.person, size: 20, color: Colors.grey)
-                                : null,
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            userData?['name'] ?? 'User',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _postController,
-                      maxLines: null,
-                      minLines: 1,
-                      decoration: InputDecoration(
-                        hintText: "What's on your mind?",
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.photo_library, size: 24),
-                          onPressed: _pickImage,
-                          tooltip: 'Add Photo',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.video_library, size: 24),
-                          onPressed: _pickVideo,
-                          tooltip: 'Add Video',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.send, size: 24),
-                          onPressed: _createPost,
-                          tooltip: 'Post',
-                        ),
-                      ],
-                    ),
-                    if (_selectedImage != null || _selectedVideo != null)
-                      Container(
-                        height: 150,
-                        margin: const EdgeInsets.only(top: 10),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
+            if (_showComposer)
+              Card(
+                margin: const EdgeInsets.all(8.0),
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      GestureDetector(
+                        onTap: () {
+                          if (userData != null && _auth.currentUser != null) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => SeeProfileFromNewsfeed(userId: _auth.currentUser!.uid),
+                              ),
+                            );
+                          }
+                        },
                         child: Row(
                           children: [
-                            if (_selectedImage != null)
-                              Expanded(
-                                child: Image.file(
-                                  _selectedImage!,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                            if (_selectedVideo != null)
-                              Expanded(
-                                child: Chewie(
-                                  controller: ChewieController(
-                                    videoPlayerController: VideoPlayerController.file(_selectedVideo!),
-                                    autoInitialize: true,
-                                    autoPlay: false,
-                                    looping: false,
-                                    allowMuting: true,
-                                    errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
-                                  ),
-                                ),
-                              ),
+                            CircleAvatar(
+                              radius: 20,
+                              backgroundColor: Colors.grey[300],
+                              backgroundImage: userData?['profile_image'] != null
+                                  ? CachedNetworkImageProvider(userData!['profile_image'])
+                                  : null,
+                              child: userData?['profile_image'] == null
+                                  ? const Icon(Icons.person, size: 20, color: Colors.grey)
+                                  : null,
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              userData?['name'] ?? 'User',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
                           ],
                         ),
                       ),
-                  ],
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _postController,
+                        maxLines: null,
+                        minLines: 1,
+                        decoration: InputDecoration(
+                          hintText: "What's on your mind?",
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.photo_library, size: 24),
+                            onPressed: _pickImage,
+                            tooltip: 'Add Photo',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.video_library, size: 24),
+                            onPressed: _pickVideo,
+                            tooltip: 'Add Video',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.send, size: 24),
+                            onPressed: _createPost,
+                            tooltip: 'Post',
+                          ),
+                        ],
+                      ),
+                      if (_selectedImage != null || _selectedVideo != null)
+                        Container(
+                          height: 150,
+                          margin: const EdgeInsets.only(top: 10),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              if (_selectedImage != null)
+                                Expanded(
+                                  child: Image.file(
+                                    _selectedImage!,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              if (_selectedVideo != null)
+                                Expanded(
+                                  child: Chewie(
+                                    controller: ChewieController(
+                                      videoPlayerController: VideoPlayerController.file(_selectedVideo!),
+                                      autoInitialize: true,
+                                      autoPlay: false,
+                                      looping: false,
+                                      allowMuting: true,
+                                      errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
-            ),
             if (!hasConnection)
               const Padding(
                 padding: EdgeInsets.all(8.0),

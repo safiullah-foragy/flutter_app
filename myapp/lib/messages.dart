@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'supabase.dart' as sb;
 import 'videos.dart';
+import 'newsfeed.dart'; // Assuming newsfeed.dart exists and contains NewsfeedPage or similar
 
 /// Conversations list and chat screen.
 class MessagesPage extends StatefulWidget {
@@ -55,9 +56,9 @@ class _MessagesPageState extends State<MessagesPage> {
 
     return Scaffold(
       appBar: AppBar(
-        leading: Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: _buildUserAvatar(currentUserData?['profile_image'], uid),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const NewsfeedPage())), // Navigate back to newsfeed
         ),
         title: const Text('Messages'),
         actions: [
@@ -191,33 +192,27 @@ class _MessagesPageState extends State<MessagesPage> {
                     },
                     child: ListTile(
                       leading: _buildUserAvatar(avatarUrl, otherId),
-                      title: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              title.isNotEmpty ? title : 'Conversation',
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                            ),
-                          ), 
-                          if (unread) const Padding(
-                            padding: EdgeInsets.only(left:8.0), 
-                            child: Icon(Icons.mark_chat_unread, color: Colors.red, size: 18)
-                          )
-                        ]
+                      title: Text(
+                        title.isNotEmpty ? title : 'Conversation',
+                        style: TextStyle(
+                          fontWeight: unread ? FontWeight.bold : FontWeight.normal,
+                        ),
                       ),
                       subtitle: Text(
                         lastMessage, 
                         maxLines: 1, 
-                        overflow: TextOverflow.ellipsis
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: unread ? Colors.black : Colors.grey,
+                        ),
                       ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min, 
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          if (isArchived) const Icon(Icons.archive, size: 16, color: Colors.grey), 
-                          const SizedBox(width: 8), 
-                          Text(_formatTimestamp(lastUpdated))
-                        ]
+                          Text(_formatTimestamp(lastUpdated), style: const TextStyle(fontSize: 12)),
+                          if (unread) const Icon(Icons.circle, color: Colors.blue, size: 10),
+                        ],
                       ),
                       onTap: () async {
                         await _markConversationRead(d.id, uid);
@@ -509,6 +504,7 @@ class _ChatPageState extends State<ChatPage> {
   final ImagePicker _picker = ImagePicker();
   bool _sending = false;
   final ScrollController _scrollController = ScrollController();
+  bool _isTyping = false;
 
   @override
   void initState() {
@@ -556,15 +552,6 @@ class _ChatPageState extends State<ChatPage> {
     setState(() => _sending = true);
 
     try {
-      final convoRef = _firestore.collection('conversations').doc(widget.conversationId);
-
-      // Ensure the conversation doc exists and both participants are present.
-      // Use arrayUnion so this is safe if called concurrently from both sides.
-      await convoRef.set({
-        'participants': FieldValue.arrayUnion([uid, widget.otherUserId]),
-        'created_at': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
       final msg = {
         'sender_id': uid,
         'text': text ?? '',
@@ -574,20 +561,20 @@ class _ChatPageState extends State<ChatPage> {
         'reactions': <String, dynamic>{},
       };
 
-      // Add the message
-      await convoRef.collection('messages').add(msg);
+      await _firestore
+          .collection('conversations')
+          .doc(widget.conversationId)
+          .collection('messages')
+          .add(msg);
 
       final lastUpdated = DateTime.now().millisecondsSinceEpoch;
       final lastMessageText = text ?? (fileType == 'image' ? '[Image]' : fileType == 'video' ? '[Video]' : '[File]');
-
-      // Update conversation metadata atomically. Use merge and a field-path
-      // update for last_read to avoid clobbering other users' read state.
-      await convoRef.set({
+      
+      await _firestore.collection('conversations').doc(widget.conversationId).update({
         'last_message': lastMessageText,
         'last_updated': lastUpdated,
-      }, SetOptions(merge: true));
-
-      await convoRef.update({'last_read.$uid': lastUpdated});
+        'last_read.$uid': lastUpdated,
+      });
 
     } catch (e) {
       debugPrint('Error sending message: $e');
@@ -684,14 +671,14 @@ class _ChatPageState extends State<ChatPage> {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
         ),
-        title: FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          future: _firestore.collection('users').doc(widget.otherUserId).get(),
+        title: StreamBuilder<DocumentSnapshot>(
+          stream: _firestore.collection('users').doc(widget.otherUserId).snapshots(),
           builder: (context, snapshot) {
             String title = widget.otherUserId;
             String? avatarUrl;
             
             if (snapshot.hasData && snapshot.data!.exists) {
-              final data = snapshot.data!.data();
+              final data = snapshot.data!.data() as Map<String, dynamic>?;
               title = data?['name'] ?? widget.otherUserId;
               avatarUrl = data?['profile_image'];
             }
@@ -732,135 +719,186 @@ class _ChatPageState extends State<ChatPage> {
       body: Column(
         children: [
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: _firestore
-                  .collection('conversations')
-                  .doc(widget.conversationId)
-                  .collection('messages')
-                  .orderBy('timestamp', descending: false)
-                  .snapshots(),
-              builder: (context, snap) {
-                if (snap.hasError) {
-                  debugPrint('Messages stream error: ${snap.error}');
-                  return Center(child: Text('Error: ${snap.error}'));
+            child: StreamBuilder<DocumentSnapshot>(
+              stream: _firestore.collection('conversations').doc(widget.conversationId).snapshots(),
+              builder: (context, convSnap) {
+                bool otherIsTyping = false;
+                int otherLastRead = 0;
+                if (convSnap.hasData && convSnap.data!.exists) {
+                  final convData = convSnap.data!.data() as Map<String, dynamic>? ?? {};
+                  final typingMap = convData['typing'] as Map<String, dynamic>? ?? {};
+                  otherIsTyping = typingMap[widget.otherUserId] == true;
+                  final lastReadMap = convData['last_read'] as Map<String, dynamic>? ?? {};
+                  otherLastRead = lastReadMap[widget.otherUserId] ?? 0;
                 }
-                
-                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
 
-                final docs = snap.data!.docs;
-                
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _scrollToBottom();
-                });
+                return StreamBuilder<QuerySnapshot>(
+                  stream: _firestore
+                      .collection('conversations')
+                      .doc(widget.conversationId)
+                      .collection('messages')
+                      .orderBy('timestamp', descending: false)
+                      .snapshots(),
+                  builder: (context, snap) {
+                    if (snap.hasError) {
+                      debugPrint('Messages stream error: ${snap.error}');
+                      return Center(child: Text('Error: ${snap.error}'));
+                    }
+                    
+                    if (!snap.hasData) return const Center(child: CircularProgressIndicator());
 
-                return ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(8),
-                  itemCount: docs.length,
-                  itemBuilder: (context, index) {
-                    final d = docs[index];
-                    final data = d.data() as Map<String, dynamic>? ?? {};
-                    final isMe = data['sender_id'] == uid;
-                    final text = data['text'] ?? '';
-                    final fileUrl = data['file_url'] ?? '';
-                    final fileType = data['file_type'] ?? '';
+                    final docs = snap.data!.docs;
+                    
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      _scrollToBottom();
+                    });
 
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: GestureDetector(
-                        onLongPress: () => _showMessageOptions(d.id, data, isMe),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 4),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isMe ? Colors.blue[100] : Colors.grey[200],
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (fileUrl.isNotEmpty && fileType == 'image')
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 8.0),
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: CachedNetworkImage(
-                                      imageUrl: fileUrl,
-                                      width: 200,
-                                      fit: BoxFit.cover,
-                                      errorWidget: (context, url, error) => 
-                                        const Icon(Icons.error),
-                                    ),
+                    return Column(
+                      children: [
+                        Expanded(
+                          child: ListView.builder(
+                            controller: _scrollController,
+                            padding: const EdgeInsets.all(8),
+                            itemCount: docs.length + (otherIsTyping ? 1 : 0),
+                            itemBuilder: (context, index) {
+                              if (otherIsTyping && index == docs.length) {
+                                return const Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text('Typing...'),
                                   ),
-                                ),
-                              if (fileUrl.isNotEmpty && fileType == 'video')
-                                GestureDetector(
-                                  onTap: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => VideoPlayerScreen(
-                                          videos: [{'video_url': fileUrl, 'text': text}],
-                                          startIndex: 0,
+                                );
+                              }
+
+                              final d = docs[index];
+                              final data = d.data() as Map<String, dynamic>? ?? {};
+                              final isMe = data['sender_id'] == uid;
+                              final text = data['text'] ?? '';
+                              final fileUrl = data['file_url'] ?? '';
+                              final fileType = data['file_type'] ?? '';
+                              final timestamp = data['timestamp'] ?? 0;
+                              final seen = isMe && otherLastRead >= timestamp;
+
+                              return Align(
+                                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                                child: Column(
+                                  crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      margin: const EdgeInsets.symmetric(vertical: 4),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                      decoration: BoxDecoration(
+                                        color: isMe ? Colors.blue : Colors.grey[200],
+                                        borderRadius: BorderRadius.only(
+                                          topLeft: Radius.circular(isMe ? 16 : 0),
+                                          topRight: Radius.circular(isMe ? 0 : 16),
+                                          bottomLeft: const Radius.circular(16),
+                                          bottomRight: const Radius.circular(16),
                                         ),
                                       ),
-                                    );
-                                  },
-                                  child: Container(
-                                    width: 200,
-                                    height: 120,
-                                    decoration: BoxDecoration(
-                                      color: Colors.black12,
-                                      borderRadius: BorderRadius.circular(8),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          if (fileUrl.isNotEmpty && fileType == 'image')
+                                            Padding(
+                                              padding: const EdgeInsets.only(bottom: 8.0),
+                                              child: ClipRRect(
+                                                borderRadius: BorderRadius.circular(8),
+                                                child: CachedNetworkImage(
+                                                  imageUrl: fileUrl,
+                                                  width: 200,
+                                                  fit: BoxFit.cover,
+                                                  errorWidget: (context, url, error) => 
+                                                    const Icon(Icons.error),
+                                                ),
+                                              ),
+                                            ),
+                                          if (fileUrl.isNotEmpty && fileType == 'video')
+                                            GestureDetector(
+                                              onTap: () {
+                                                Navigator.push(
+                                                  context,
+                                                  MaterialPageRoute(
+                                                    builder: (_) => VideoPlayerScreen(
+                                                      videos: [{'video_url': fileUrl, 'text': text}],
+                                                      startIndex: 0,
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                              child: Container(
+                                                width: 200,
+                                                height: 120,
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black12,
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: [
+                                                    const Icon(Icons.play_arrow, size: 40, color: Colors.white),
+                                                    Text('Video', style: TextStyle(color: Colors.white)),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          if (text.isNotEmpty) 
+                                            Padding(
+                                              padding: const EdgeInsets.only(bottom: 4.0),
+                                              child: Text(text, style: TextStyle(color: isMe ? Colors.white : Colors.black)),
+                                            ),
+                                          if ((data['reactions'] as Map?)?.isNotEmpty ?? false)
+                                            Padding(
+                                              padding: const EdgeInsets.only(top: 4.0),
+                                              child: Wrap(
+                                                spacing: 6,
+                                                children: (data['reactions'] as Map<String, dynamic>).entries.map((e) {
+                                                  final emoji = e.key;
+                                                  final users = List<String>.from(e.value ?? <String>[]);
+                                                  return Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.white.withOpacity(0.8),
+                                                      borderRadius: BorderRadius.circular(12)
+                                                    ),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Text(emoji),
+                                                        const SizedBox(width: 4),
+                                                        Text(users.length.toString()),
+                                                      ],
+                                                    ),
+                                                  );
+                                                }).toList(),
+                                              ),
+                                            ),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                _formatMessageTimestamp(timestamp),
+                                                style: const TextStyle(fontSize: 10, color: Colors.white70),
+                                              ),
+                                              if (isMe)
+                                                Icon(
+                                                  Icons.done_all,
+                                                  size: 16,
+                                                  color: seen ? Colors.green : Colors.grey,
+                                                ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        const Icon(Icons.play_arrow, size: 40, color: Colors.white),
-                                        Text('Video', style: TextStyle(color: Colors.white)),
-                                      ],
-                                    ),
-                                  ),
+                                  ],
                                 ),
-                              if (text.isNotEmpty) 
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 4.0),
-                                  child: Text(text),
-                                ),
-                              if ((data['reactions'] as Map?)?.isNotEmpty ?? false)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 4.0),
-                                  child: Wrap(
-                                    spacing: 6,
-                                    children: (data['reactions'] as Map<String, dynamic>).entries.map((e) {
-                                      final emoji = e.key;
-                                      final users = List<String>.from(e.value ?? <String>[]);
-                                      return Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: Colors.white.withOpacity(0.8),
-                                          borderRadius: BorderRadius.circular(12)
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Text(emoji),
-                                            const SizedBox(width: 4),
-                                            Text(users.length.toString()),
-                                          ],
-                                        ),
-                                      );
-                                    }).toList(),
-                                  ),
-                                ),
-                              Text(
-                                _formatMessageTimestamp(data['timestamp'] ?? 0),
-                                style: const TextStyle(fontSize: 10, color: Colors.grey),
-                              ),
-                            ],
+                              );
+                            },
                           ),
                         ),
-                      ),
+                      ],
                     );
                   },
                 );
@@ -885,8 +923,8 @@ class _ChatPageState extends State<ChatPage> {
                     controller: _controller,
                     decoration: const InputDecoration(
                       hintText: 'Type a message',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(30))),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                     ),
                     minLines: 1,
                     maxLines: 4,

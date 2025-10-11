@@ -1,6 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:io';
 import 'package:path/path.dart';
+import 'dart:async';
 
 class SupabaseConfig {
   static const String supabaseUrl = 'https://nqydqpllowakssgfpevt.supabase.co';
@@ -23,10 +24,43 @@ Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'p
     // Try upload with upsert true so retries won't fail on duplicates.
     await supabase.storage.from(folder).upload(finalFileName, imageFile, fileOptions: FileOptions(upsert: true));
     final String publicUrl = supabase.storage.from(folder).getPublicUrl(finalFileName);
+
+    // Validate public URL is accessible. If not, try to create a signed URL
+    // (useful when buckets are private or RLS blocks public access).
+    final ok = await _headOk(publicUrl);
+    if (ok) return publicUrl;
+
+    try {
+      final dynamic signed = await supabase.storage.from(folder).createSignedUrl(finalFileName, 60 * 60);
+      final String? signedUrl = signed?.toString();
+      if (signedUrl != null && await _headOk(signedUrl)) {
+        return signedUrl;
+      }
+    } catch (e) {
+      // ignore and fallthrough to returning publicUrl which may still be useful
+      print('createSignedUrl failed: $e');
+    }
+
     return publicUrl;
   } catch (e) {
     print('Error uploading to Supabase (exception): $e');
     throw Exception('Failed to upload image: $e');
+  }
+}
+
+Future<bool> _headOk(String url) async {
+  try {
+    final uri = Uri.parse(url);
+    final client = HttpClient();
+    client.userAgent = 'MyApp/1.0';
+    final req = await client.openUrl('HEAD', uri);
+    final resp = await req.close();
+    final ok = resp.statusCode >= 200 && resp.statusCode < 300;
+    client.close(force: true);
+    return ok;
+  } catch (e) {
+    print('HEAD request failed for $url: $e');
+    return false;
   }
 }
 
