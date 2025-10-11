@@ -909,7 +909,7 @@ class _ChatPageState extends State<ChatPage> {
                                                   Icon(
                                                     Icons.done_all,
                                                     size: 16,
-                                                    color: seen ? Colors.green : Colors.grey,
+                                                    color: seen ? const Color.fromARGB(255, 175, 135, 76) : const Color.fromARGB(255, 235, 238, 237),
                                                   ),
                                               ],
                                             ),
