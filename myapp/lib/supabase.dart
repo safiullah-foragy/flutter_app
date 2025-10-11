@@ -18,19 +18,14 @@ SupabaseClient get supabase => Supabase.instance.client;
 
 Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'profile-images'}) async {
   try {
-    final String finalFileName = fileName ?? '${folder}_${DateTime.now().millisecondsSinceEpoch}${extension(imageFile.path)}';
-    
-    await supabase.storage
-        .from(folder)
-        .upload(finalFileName, imageFile);
-    
-    final String publicUrl = supabase.storage
-        .from(folder)
-        .getPublicUrl(finalFileName);
-    
+    final String finalFileName = fileName ?? '${folder}/${DateTime.now().millisecondsSinceEpoch}${extension(imageFile.path)}';
+
+    // Try upload with upsert true so retries won't fail on duplicates.
+    await supabase.storage.from(folder).upload(finalFileName, imageFile, fileOptions: FileOptions(upsert: true));
+    final String publicUrl = supabase.storage.from(folder).getPublicUrl(finalFileName);
     return publicUrl;
   } catch (e) {
-    print('Error uploading to Supabase: $e');
+    print('Error uploading to Supabase (exception): $e');
     throw Exception('Failed to upload image: $e');
   }
 }
@@ -41,4 +36,14 @@ Future<String> uploadVideo(File videoFile, {String? fileName}) async {
 
 Future<String> uploadPostImage(File imageFile, {String? fileName}) async {
   return uploadImage(imageFile, fileName: fileName, folder: 'post-images');
+}
+
+/// Upload image intended for messages (public folder `message-images`).
+Future<String> uploadMessageImage(File imageFile, {String? fileName}) async {
+  return uploadImage(imageFile, fileName: fileName, folder: 'message-images');
+}
+
+/// Upload video intended for messages (public folder `message-videos`).
+Future<String> uploadMessageVideo(File videoFile, {String? fileName}) async {
+  return uploadImage(videoFile, fileName: fileName, folder: 'message-videos');
 }

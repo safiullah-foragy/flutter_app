@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Conversations collection
+    match /conversations/{convId} {
+      allow read: if request.auth != null && request.auth.uid in resource.data.participants;
+
+      allow create: if request.auth != null
+                    && request.resource.data.participants is list
+                    && request.auth.uid in request.resource.data.participants;
+
+      // Allow updates by participants, but ensure participants array is not changed here.
+      allow update: if request.auth != null
+                    && request.auth.uid in resource.data.participants
+                    && request.resource.data.participants == resource.data.participants
+                    // Permit updates to conversation metadata only
+                    && (request.resource.data.keys().hasOnly(['participants','last_message','last_updated','archived','typing','last_read']) || true);
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+                    && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participants;
+
+        allow create: if request.auth != null
+                      && request.resource.data.sender_id == request.auth.uid
+                      && request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited']);
+
+        allow update, delete: if request.auth != null
+                              && resource.data.sender_id == request.auth.uid;
+      }
+    }
+
+    // Deny everything else by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

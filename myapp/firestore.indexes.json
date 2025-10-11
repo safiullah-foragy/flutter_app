@@ -1,10 +1,18 @@
 {
   "indexes": [
     {
+      "collectionGroup": "conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "participants", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "last_updated", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "posts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "is_private", "order": "ASCENDING" },
+        { "fieldPath": "post_type", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
     },
@@ -13,15 +21,6 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
-      ]
-    }
-    ,
-    {
-      "collectionGroup": "posts",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "post_type", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
     }
