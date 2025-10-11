@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -13,6 +14,11 @@ import 'package:chewie/chewie.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'supabase.dart' as sb;
 import 'see_profile_from_newsfeed.dart';
+import 'subnewsfeed1.dart';
+import 'subnewsfeed2.dart';
+import 'videos.dart';
+import 'messages.dart';
+import 'jobs.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -21,12 +27,15 @@ class NewsfeedPage extends StatefulWidget {
   State<NewsfeedPage> createState() => _NewsfeedPageState();
 }
 
-class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderStateMixin {
+class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMixin {
   final firebase_auth.FirebaseAuth _auth = firebase_auth.FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final ImagePicker _imagePicker = ImagePicker();
   final TextEditingController _postController = TextEditingController();
   final TextEditingController _commentController = TextEditingController();
+  // per-post comment controllers to avoid sharing a single controller across posts
+  Map<String, TextEditingController> perPostCommentControllers = {};
+  final Connectivity _connectivity = Connectivity();
 
   File? _selectedImage;
   File? _selectedVideo;
@@ -40,29 +49,49 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
   Map<String, TextEditingController> commentEditControllers = {};
   Map<String, bool> expandedComments = {};
   Map<String, Map<String, dynamic>?> userCache = {};
+  // video player controllers are initialized lazily to avoid blocking initial load
+  Map<String, VideoPlayerController?> videoPlayerControllers = {};
   Map<String, ChewieController?> videoControllers = {};
   Map<String, AnimationController?> likeAnimationControllers = {};
   StreamSubscription<QuerySnapshot>? _postsSubscription;
   Map<String, StreamSubscription<QuerySnapshot>?> commentSubscriptions = {};
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   bool isLoading = true;
+  bool hasConnection = true;
 
   @override
   void initState() {
     super.initState();
+    _firestore.settings = const Settings(persistenceEnabled: true);
+    _checkConnectivity();
     _fetchUserData();
     _fetchInitialPosts();
     _setupPostsListener();
+  }
+
+  void _checkConnectivity() {
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen((ConnectivityResult result) {
+      setState(() {
+        hasConnection = result != ConnectivityResult.none;
+      });
+      if (!hasConnection) {
+        Fluttertoast.showToast(msg: 'No internet connection. Showing cached data if available.');
+      }
+    });
   }
 
   @override
   void dispose() {
     _postController.dispose();
     _commentController.dispose();
+    perPostCommentControllers.forEach((_, c) => c.dispose());
     commentEditControllers.forEach((_, controller) => controller.dispose());
     videoControllers.forEach((_, controller) => controller?.dispose());
+    videoPlayerControllers.forEach((_, controller) => controller?.dispose());
     likeAnimationControllers.forEach((_, controller) => controller?.dispose());
     _postsSubscription?.cancel();
     commentSubscriptions.forEach((_, sub) => sub?.cancel());
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
@@ -75,10 +104,16 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           toastLength: Toast.LENGTH_LONG,
         );
         await openAppSettings();
+      } else if (status.isPermanentlyDenied) {
+        Fluttertoast.showToast(
+          msg: 'Permission permanently denied. Please enable in settings.',
+          toastLength: Toast.LENGTH_LONG,
+        );
+        await openAppSettings();
       }
     } catch (e) {
       print('Error requesting permission: $e');
-      Fluttertoast.showToast(msg: 'Error requesting permission: $e');
+      // Avoid showing random error messages
     }
   }
 
@@ -86,7 +121,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
     try {
       final firebase_auth.User? user = _auth.currentUser;
       if (user == null) {
-        Fluttertoast.showToast(msg: 'User not logged in');
         return;
       }
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(user.uid).get();
@@ -95,102 +129,36 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           userData = userDoc.data() as Map<String, dynamic>?;
           userCache[user.uid] = userData;
         });
-      } else {
-        Fluttertoast.showToast(msg: 'User data not found');
       }
     } catch (e) {
       print('Error fetching user data: $e');
-      Fluttertoast.showToast(msg: 'Failed to load user data: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently or log
+      } else {
+        // Avoid showing toast
+      }
     }
   }
 
   Future<void> _fetchInitialPosts() async {
+    if (!hasConnection) {
+      setState(() {
+        isLoading = false;
+      });
+      return;
+    }
     try {
       QuerySnapshot postsSnapshot = await _firestore
           .collection('posts')
           .where('is_private', isEqualTo: false)
           .orderBy('timestamp', descending: true)
-          .limit(20)
           .get();
 
       List<Map<String, dynamic>> postsList = [];
       for (var doc in postsSnapshot.docs) {
-        Map<String, dynamic> postData = doc.data() as Map<String, dynamic>;
-        String postId = doc.id;
-
-        String userId = postData['user_id'] ?? '';
-        Map<String, dynamic>? postUserData;
-        if (userCache.containsKey(userId)) {
-          postUserData = userCache[userId];
-        } else {
-          DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
-          if (userDoc.exists) {
-            postUserData = userDoc.data() as Map<String, dynamic>;
-            userCache[userId] = postUserData;
-          }
-        }
-
-        DocumentSnapshot likesDoc = await _firestore
-            .collection('posts')
-            .doc(postId)
-            .collection('likes')
-            .doc(_auth.currentUser?.uid)
-            .get();
-
-        String userReaction = likesDoc.exists ? (likesDoc.get('reaction') ?? 'like') : '';
-
-        postsList.add({
-          'id': postId,
-          ...postData,
-          'user_data': postUserData,
-        });
-
-        setState(() {
-          postLikes[postId] = postData['likes_count'] ?? 0;
-          postCommentCounts[postId] = postData['comments_count'] ?? 0;
-          userReactions[postId] = userReaction;
-        });
-
-        if (postData['video_url']?.isNotEmpty ?? false) {
-          final videoPlayerController = VideoPlayerController.networkUrl(Uri.parse(postData['video_url']));
-          await videoPlayerController.initialize();
-          videoControllers[postId] = ChewieController(
-            videoPlayerController: videoPlayerController,
-            autoPlay: false,
-            looping: false,
-            aspectRatio: videoPlayerController.value.aspectRatio,
-            allowMuting: true,
-            errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
-          );
-        }
-      }
-
-      setState(() {
-        posts = postsList;
-        isLoading = false;
-      });
-    } catch (e) {
-      print('Error fetching initial posts: $e');
-      Fluttertoast.showToast(msg: 'Failed to load posts: $e');
-      setState(() {
-        isLoading = false;
-      });
-    }
-  }
-
-  void _setupPostsListener() {
-    _postsSubscription?.cancel();
-    _postsSubscription = _firestore
-        .collection('posts')
-        .where('is_private', isEqualTo: false)
-        .orderBy('timestamp', descending: true)
-        .limit(20)
-        .snapshots()
-        .listen((snapshot) async {
-      try {
-        List<Map<String, dynamic>> postsList = [];
-        for (var doc in snapshot.docs) {
-          Map<String, dynamic> postData = doc.data() as Map<String, dynamic>;
+        try {
+          final postData = doc.data() as Map<String, dynamic>?;
+          if (postData == null) continue;
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
@@ -220,37 +188,100 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
             'user_data': postUserData,
           });
 
-          setState(() {
-            postLikes[postId] = postData['likes_count'] ?? 0;
-            postCommentCounts[postId] = postData['comments_count'] ?? 0;
-            userReactions[postId] = userReaction;
+          postLikes[postId] = postData['likes_count'] ?? 0;
+          postCommentCounts[postId] = postData['comments_count'] ?? 0;
+          userReactions[postId] = userReaction;
+
+          // Defer video initialization until the post is visible to improve load performance.
+          if ((postData['video_url'] as String?)?.isNotEmpty ?? false) {
+            videoPlayerControllers[postId] = null;
+            videoControllers[postId] = null;
+          }
+        } catch (postError) {
+          print('Error processing post ${doc.id}: $postError');
+        }
+      }
+
+      setState(() {
+        posts = postsList;
+        isLoading = false;
+      });
+    } catch (e) {
+      print('Error fetching initial posts: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  void _setupPostsListener() {
+    _postsSubscription?.cancel();
+    _postsSubscription = _firestore
+        .collection('posts')
+        .where('is_private', isEqualTo: false)
+        .orderBy('timestamp', descending: true)
+        .snapshots()
+        .listen((snapshot) async {
+      if (!hasConnection) return;
+      List<Map<String, dynamic>> postsList = [];
+      for (var doc in snapshot.docs) {
+        try {
+          final postData = doc.data() as Map<String, dynamic>?;
+          if (postData == null) continue;
+          String postId = doc.id;
+
+          String userId = postData['user_id'] ?? '';
+          Map<String, dynamic>? postUserData;
+          if (userCache.containsKey(userId)) {
+            postUserData = userCache[userId];
+          } else {
+            DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
+            if (userDoc.exists) {
+              postUserData = userDoc.data() as Map<String, dynamic>;
+              userCache[userId] = postUserData;
+            }
+          }
+
+          DocumentSnapshot likesDoc = await _firestore
+              .collection('posts')
+              .doc(postId)
+              .collection('likes')
+              .doc(_auth.currentUser?.uid)
+              .get();
+
+          String userReaction = likesDoc.exists ? (likesDoc.get('reaction') ?? 'like') : '';
+
+          postsList.add({
+            'id': postId,
+            ...postData,
+            'user_data': postUserData,
           });
 
-          if (postData['video_url']?.isNotEmpty ?? false && videoControllers[postId] == null) {
-            final videoPlayerController = VideoPlayerController.networkUrl(Uri.parse(postData['video_url']));
-            await videoPlayerController.initialize();
-            videoControllers[postId] = ChewieController(
-              videoPlayerController: videoPlayerController,
-              autoPlay: false,
-              looping: false,
-              aspectRatio: videoPlayerController.value.aspectRatio,
-              allowMuting: true,
-              errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
-            );
-          }
+          postLikes[postId] = postData['likes_count'] ?? 0;
+          postCommentCounts[postId] = postData['comments_count'] ?? 0;
+          userReactions[postId] = userReaction;
+          // videos are handled lazily when user opens a video player screen
+        } catch (postError) {
+          print('Error processing post ${doc.id}: $postError');
         }
-
-        setState(() {
-          posts = postsList;
-          isLoading = false;
-        });
-      } catch (e) {
-        print('Error processing posts snapshot: $e');
-        Fluttertoast.showToast(msg: 'Error loading posts: $e');
       }
+
+      setState(() {
+        posts = postsList;
+        isLoading = false;
+      });
     }, onError: (e) {
       print('Error in posts listener: $e');
-      Fluttertoast.showToast(msg: 'Failed to load posts: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
     });
   }
 
@@ -293,7 +324,11 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
       });
     } catch (e) {
       print('Error fetching comments: $e');
-      Fluttertoast.showToast(msg: 'Failed to load comments: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
       setState(() {
         postComments[postId] = [];
       });
@@ -304,11 +339,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
     try {
       final firebase_auth.User? user = _auth.currentUser;
       if (user == null) {
-        Fluttertoast.showToast(msg: 'User not logged in');
         return;
       }
       if (_postController.text.isEmpty && _selectedImage == null && _selectedVideo == null) {
-        Fluttertoast.showToast(msg: 'Please add content to post');
         return;
       }
 
@@ -368,11 +401,13 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
         _selectedImage = null;
         _selectedVideo = null;
       });
-
-      Fluttertoast.showToast(msg: 'Post created successfully');
     } catch (e) {
       print('Error creating post: $e');
-      Fluttertoast.showToast(msg: 'Error creating post: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
     }
   }
 
@@ -396,7 +431,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
       }
     } catch (e) {
       print('Error picking image: $e');
-      Fluttertoast.showToast(msg: 'Error picking image: $e');
+      // Avoid toast
     }
   }
 
@@ -419,19 +454,17 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
       }
     } catch (e) {
       print('Error picking video: $e');
-      Fluttertoast.showToast(msg: 'Error picking video: $e');
+      // Avoid toast
     }
   }
 
-  Future<void> _addComment(String postId) async {
+  Future<void> _addComment(String postId, TextEditingController controller) async {
     try {
       final firebase_auth.User? user = _auth.currentUser;
       if (user == null) {
-        Fluttertoast.showToast(msg: 'User not logged in');
         return;
       }
-      if (_commentController.text.isEmpty) {
-        Fluttertoast.showToast(msg: 'Please write a comment');
+      if (controller.text.isEmpty) {
         return;
       }
 
@@ -442,7 +475,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           .collection('comments')
           .add({
         'user_id': user.uid,
-        'text': _commentController.text,
+  'text': controller.text,
         'timestamp': timestamp,
       });
 
@@ -455,25 +488,26 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
         postComments[postId]!.add({
           'id': ref.id,
           'user_id': user.uid,
-          'text': _commentController.text,
+          'text': controller.text,
           'timestamp': timestamp,
           'user_data': userData,
         });
         postCommentCounts[postId] = (postCommentCounts[postId] ?? 0) + 1;
-        _commentController.clear();
+        controller.clear();
       });
-
-      Fluttertoast.showToast(msg: 'Comment added');
     } catch (e) {
       print('Error adding comment: $e');
-      Fluttertoast.showToast(msg: 'Error adding comment: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
     }
   }
 
   Future<void> _editComment(String postId, String commentId, String newText) async {
     try {
       if (newText.isEmpty) {
-        Fluttertoast.showToast(msg: 'Comment cannot be empty');
         return;
       }
       await _firestore
@@ -494,11 +528,13 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           comment['edited'] = true;
         }
       });
-
-      Fluttertoast.showToast(msg: 'Comment updated');
     } catch (e) {
       print('Error updating comment: $e');
-      Fluttertoast.showToast(msg: 'Error updating comment: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
     }
   }
 
@@ -521,11 +557,13 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           postCommentCounts[postId] = (postCommentCounts[postId] ?? 1) - 1;
         }
       });
-
-      Fluttertoast.showToast(msg: 'Comment deleted');
     } catch (e) {
       print('Error deleting comment: $e');
-      Fluttertoast.showToast(msg: 'Error deleting comment: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
     }
   }
 
@@ -533,7 +571,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
     try {
       final firebase_auth.User? user = _auth.currentUser;
       if (user == null) {
-        Fluttertoast.showToast(msg: 'User not logged in');
         return;
       }
 
@@ -544,8 +581,11 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           .doc(user.uid);
 
       DocumentSnapshot likeDoc = await docRef.get();
+      bool wasLiked = likeDoc.exists;
+      String oldReaction = wasLiked ? (likeDoc.get('reaction') ?? 'like') : '';
 
-      if (likeDoc.exists && userReactions[postId] == reaction) {
+      if (wasLiked && oldReaction == reaction) {
+        // Unlike
         await docRef.delete();
         setState(() {
           userReactions[postId] = '';
@@ -555,6 +595,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
           'likes_count': FieldValue.increment(-1),
         });
       } else {
+        // Like or change reaction
         await docRef.set({
           'user_id': user.uid,
           'reaction': reaction,
@@ -562,12 +603,12 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
         });
         setState(() {
           userReactions[postId] = reaction;
-          if (!likeDoc.exists) {
+          if (!wasLiked) {
             postLikes[postId] = (postLikes[postId] ?? 0) + 1;
           }
           likeAnimationControllers[postId]?.forward(from: 0);
         });
-        if (!likeDoc.exists) {
+        if (!wasLiked) {
           await _firestore.collection('posts').doc(postId).update({
             'likes_count': FieldValue.increment(1),
           });
@@ -575,7 +616,11 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
       }
     } catch (e) {
       print('Error toggling like: $e');
-      Fluttertoast.showToast(msg: 'Failed to update like: $e');
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        // Handle silently
+      } else {
+        // Avoid toast
+      }
     }
   }
 
@@ -597,6 +642,39 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
         );
       },
     );
+  }
+
+  Future<void> _initVideoControllers(String postId, String url) async {
+    if (url.isEmpty) return;
+    try {
+      // If a controller already exists, don't re-create
+      if (videoPlayerControllers[postId] != null || videoControllers[postId] != null) return;
+
+  final vpc = VideoPlayerController.networkUrl(Uri.parse(url));
+      videoPlayerControllers[postId] = vpc;
+      // start initialize and wait
+      await vpc.initialize();
+
+      final chewie = ChewieController(
+        videoPlayerController: vpc,
+        autoInitialize: true,
+        autoPlay: false,
+        looping: false,
+        allowMuting: true,
+      );
+
+      videoControllers[postId] = chewie;
+      if (mounted) setState(() {});
+    } catch (e) {
+      print('Error initializing video for $postId: $e');
+      // Clean up any partially created controllers
+      try {
+        await videoPlayerControllers[postId]?.dispose();
+      } catch (_) {}
+      videoPlayerControllers[postId] = null;
+      videoControllers[postId] = null;
+      if (mounted) setState(() {});
+    }
   }
 
   Widget _buildReactionButton(String emoji, String reaction, String postId) {
@@ -630,127 +708,147 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: true, // Allow back navigation
+      canPop: true,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Newsfeed'),
           backgroundColor: Colors.blue,
           foregroundColor: Colors.white,
-          toolbarHeight: 40,
+          toolbarHeight: 48,
+          actions: [
+            IconButton(
+              tooltip: 'Messages',
+              icon: const Icon(Icons.message),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MessagesPage())),
+            ),
+            IconButton(
+              tooltip: 'Videos',
+              icon: const Icon(Icons.videocam),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const VideosPage())),
+            ),
+            IconButton(
+              tooltip: 'Jobs',
+              icon: const Icon(Icons.work),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const JobsPage())),
+            ),
+          ],
         ),
         body: Column(
           children: [
-            SizedBox(
-              height: 100,
-              child: Card(
-                margin: const EdgeInsets.all(8.0),
-                child: Padding(
-                  padding: const EdgeInsets.all(6.0),
-                  child: Column(
-                    children: [
-                      GestureDetector(
-                        onTap: () {
-                          if (userData != null && _auth.currentUser != null) {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => SeeProfileFromNewsfeed(userId: _auth.currentUser!.uid),
-                              ),
-                            );
-                          } else {
-                            Fluttertoast.showToast(msg: 'User not logged in');
-                          }
-                        },
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 15,
-                              backgroundColor: Colors.grey[300],
-                              backgroundImage: userData?['profile_image'] != null
-                                  ? CachedNetworkImageProvider(userData!['profile_image'])
-                                  : null,
-                              child: userData?['profile_image'] == null
-                                  ? const Icon(Icons.person, size: 15, color: Colors.grey)
-                                  : null,
+            Card(
+              margin: const EdgeInsets.all(8.0),
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    GestureDetector(
+                      onTap: () {
+                        if (userData != null && _auth.currentUser != null) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => SeeProfileFromNewsfeed(userId: _auth.currentUser!.uid),
                             ),
-                            const SizedBox(width: 8),
-                            Text(
-                              userData?['name'] ?? 'User',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
+                          );
+                        }
+                      },
+                      child: Row(
                         children: [
-                          Expanded(
-                            child: SizedBox(
-                              height: 36,
-                              child: TextField(
-                                controller: _postController,
-                                maxLines: 1,
-                                decoration: InputDecoration(
-                                  hintText: "What's on your mind?",
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                ),
-                              ),
-                            ),
+                          CircleAvatar(
+                            radius: 20,
+                            backgroundColor: Colors.grey[300],
+                            backgroundImage: userData?['profile_image'] != null
+                                ? CachedNetworkImageProvider(userData!['profile_image'])
+                                : null,
+                            child: userData?['profile_image'] == null
+                                ? const Icon(Icons.person, size: 20, color: Colors.grey)
+                                : null,
                           ),
-                          const SizedBox(width: 6),
-                          IconButton(
-                            icon: const Icon(Icons.photo_library, size: 18),
-                            onPressed: _pickImage,
-                            tooltip: 'Add Photo',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.video_library, size: 18),
-                            onPressed: _pickVideo,
-                            tooltip: 'Add Video',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.send, size: 18),
-                            onPressed: _createPost,
-                            tooltip: 'Post',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
+                          const SizedBox(width: 10),
+                          Text(
+                            userData?['name'] ?? 'User',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                           ),
                         ],
                       ),
-                      if (_selectedImage != null || _selectedVideo != null)
-                        SizedBox(
-                          height: 50,
-                          child: Row(
-                            children: [
-                              if (_selectedImage != null) Expanded(child: Image.file(_selectedImage!)),
-                              if (_selectedVideo != null)
-                                Expanded(
-                                  child: Chewie(
-                                    controller: ChewieController(
-                                      videoPlayerController: VideoPlayerController.file(_selectedVideo!),
-                                      autoInitialize: true,
-                                      autoPlay: false,
-                                      looping: false,
-                                      allowMuting: true,
-                                      errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
-                                    ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _postController,
+                      maxLines: null,
+                      minLines: 1,
+                      decoration: InputDecoration(
+                        hintText: "What's on your mind?",
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.photo_library, size: 24),
+                          onPressed: _pickImage,
+                          tooltip: 'Add Photo',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.video_library, size: 24),
+                          onPressed: _pickVideo,
+                          tooltip: 'Add Video',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.send, size: 24),
+                          onPressed: _createPost,
+                          tooltip: 'Post',
+                        ),
+                      ],
+                    ),
+                    if (_selectedImage != null || _selectedVideo != null)
+                      Container(
+                        height: 150,
+                        margin: const EdgeInsets.only(top: 10),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            if (_selectedImage != null)
+                              Expanded(
+                                child: Image.file(
+                                  _selectedImage!,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            if (_selectedVideo != null)
+                              Expanded(
+                                child: Chewie(
+                                  controller: ChewieController(
+                                    videoPlayerController: VideoPlayerController.file(_selectedVideo!),
+                                    autoInitialize: true,
+                                    autoPlay: false,
+                                    looping: false,
+                                    allowMuting: true,
+                                    errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
                                   ),
                                 ),
-                            ],
-                          ),
+                              ),
+                          ],
                         ),
-                    ],
-                  ),
+                      ),
+                  ],
                 ),
               ),
             ),
+            if (!hasConnection)
+              const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Text('No internet connection. Showing cached data.'),
+              ),
             Expanded(
               child: isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -841,13 +939,31 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                   child: Center(child: CircularProgressIndicator()),
                 ),
                 errorWidget: (context, url, error) => const Icon(Icons.error),
+                fit: BoxFit.cover,
               ),
             if (post['video_url']?.isNotEmpty ?? false)
               SizedBox(
                 height: 200,
-                child: videoControllers[postId] != null
-                    ? Chewie(controller: videoControllers[postId]!)
-                    : const Center(child: CircularProgressIndicator()),
+                child: Builder(builder: (context) {
+                  final url = post['video_url'] as String? ?? '';
+                  // kick off lazy initialization if not yet created
+                  if ((videoControllers[postId] == null) && (videoPlayerControllers[postId] == null)) {
+                    // initialize in background; don't await here
+                    _initVideoControllers(postId, url);
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  if (videoControllers[postId] != null) {
+                    return Chewie(controller: videoControllers[postId]!);
+                  }
+
+                  // If player exists but chewie not ready, show loading
+                  if (videoPlayerControllers[postId] != null && !(videoPlayerControllers[postId]!.value.isInitialized)) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  return const Center(child: Text('Video unavailable'));
+                }),
               ),
             const SizedBox(height: 10),
             Row(
@@ -868,11 +984,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
                 GestureDetector(
-                  onTap: () {
-                    if (userReaction.isEmpty) {
-                      _toggleLike(postId, 'like');
-                    }
-                  },
+                  onTap: () => _toggleLike(postId, 'like'),
                   onLongPress: () => _showReactionOptions(postId),
                   child: ScaleTransition(
                     scale: Tween<double>(begin: 1.0, end: 1.2).animate(
@@ -883,10 +995,16 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                     ),
                     child: Row(
                       children: [
-                        Icon(
-                          Icons.thumb_up,
-                          color: userReaction.isNotEmpty ? Colors.blue : Colors.grey,
-                        ),
+                        if (userReaction.isEmpty)
+                          Icon(
+                            Icons.thumb_up,
+                            color: Colors.grey,
+                          )
+                        else
+                          Text(
+                            _getReactionEmoji(userReaction),
+                            style: const TextStyle(fontSize: 24, color: Colors.blue),
+                          ),
                         const SizedBox(width: 5),
                         Text(
                           userReaction.isEmpty ? 'Like' : 'Liked',
@@ -900,9 +1018,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                 ),
                 GestureDetector(
                   onTap: () {
-                    bool wasExpanded = expandedComments[postId] ?? false;
                     setState(() {
-                      expandedComments[postId] = !wasExpanded;
+                      expandedComments[postId] = !(expandedComments[postId] ?? false);
                     });
                     if (expandedComments[postId] ?? false) {
                       _fetchComments(postId);
@@ -915,7 +1032,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                           .snapshots()
                           .listen((_) => _fetchComments(postId), onError: (e) {
                         print('Error in comments listener: $e');
-                        Fluttertoast.showToast(msg: 'Error loading comments: $e');
                         setState(() {
                           postComments[postId] = [];
                         });
@@ -926,11 +1042,11 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                       postComments.remove(postId);
                     }
                   },
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(Icons.comment, color: Colors.grey),
-                      SizedBox(width: 5),
-                      Text('Comment', style: TextStyle(color: Colors.grey)),
+                      const Icon(Icons.comment, color: Colors.grey),
+                      const SizedBox(width: 5),
+                      const Text('Comment', style: TextStyle(color: Colors.grey)),
                     ],
                   ),
                 ),
@@ -944,7 +1060,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                   children: [
                     Expanded(
                       child: TextField(
-                        controller: _commentController,
+                        controller: perPostCommentControllers.putIfAbsent(postId, () => TextEditingController()),
                         decoration: const InputDecoration(
                           hintText: 'Write a comment...',
                           border: OutlineInputBorder(),
@@ -954,20 +1070,21 @@ class _NewsfeedPageState extends State<NewsfeedPage> with SingleTickerProviderSt
                     ),
                     IconButton(
                       icon: const Icon(Icons.send),
-                      onPressed: () => _addComment(postId),
+                      onPressed: () => _addComment(postId, perPostCommentControllers[postId]!),
                     ),
                   ],
                 ),
               ),
-              postComments[postId] == null
-                  ? const Center(child: CircularProgressIndicator())
-                  : postComments[postId]!.isEmpty
-                      ? const Text('No comments yet')
-                      : Column(
-                          children: postComments[postId]!
-                              .map((comment) => _buildCommentItem(postId, comment))
-                              .toList(),
-                        ),
+              if (postComments[postId] == null)
+                const Center(child: CircularProgressIndicator())
+              else if (postComments[postId]!.isEmpty)
+                const Text('No comments yet')
+              else
+                Column(
+                  children: postComments[postId]!
+                      .map((comment) => _buildCommentItem(postId, comment))
+                      .toList(),
+                ),
             ],
           ],
         ),
