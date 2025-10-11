@@ -8,14 +8,11 @@ import 'package:fluttertoast/fluttertoast.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'supabase.dart' as sb;
 import 'see_profile_from_newsfeed.dart';
-import 'subnewsfeed1.dart';
-import 'subnewsfeed2.dart';
 import 'videos.dart';
 import 'messages.dart';
 import 'jobs.dart';
@@ -36,6 +33,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   // per-post comment controllers to avoid sharing a single controller across posts
   Map<String, TextEditingController> perPostCommentControllers = {};
   final Connectivity _connectivity = Connectivity();
+  final ScrollController _scrollController = ScrollController();
 
   File? _selectedImage;
   File? _selectedVideo;
@@ -93,6 +91,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     _postsSubscription?.cancel();
     commentSubscriptions.forEach((_, sub) => sub?.cancel());
     _connectivitySubscription?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -914,6 +913,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   ),
                 ),
               ),
+            
             if (!hasConnection)
               const Padding(
                 padding: EdgeInsets.all(8.0),
@@ -925,6 +925,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   : posts.isEmpty
                       ? const Center(child: Text('No posts available'))
                       : ListView.builder(
+                          controller: _scrollController,
                           itemCount: posts.length,
                           itemBuilder: (context, index) {
                             final post = posts[index];
