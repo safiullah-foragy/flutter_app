@@ -51,8 +51,15 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   Map<String, VideoPlayerController?> videoPlayerControllers = {};
   Map<String, ChewieController?> videoControllers = {};
   Map<String, AnimationController?> likeAnimationControllers = {};
+  // Cache of resolved image URLs (may be signed) keyed by postId
+  Map<String, String> resolvedImageUrls = {};
   StreamSubscription<QuerySnapshot>? _postsSubscription;
+  StreamSubscription<DocumentSnapshot>? _currentUserSubscription;
   Map<String, StreamSubscription<QuerySnapshot>?> commentSubscriptions = {};
+  // Live like state per post for the current user
+  Map<String, StreamSubscription<DocumentSnapshot>?> likeSubscriptions = {};
+  // Live author profile updates per user id
+  Map<String, StreamSubscription<DocumentSnapshot>?> authorSubscriptions = {};
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   bool isLoading = true;
   bool hasConnection = true;
@@ -90,6 +97,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     likeAnimationControllers.forEach((_, controller) => controller?.dispose());
     _postsSubscription?.cancel();
     commentSubscriptions.forEach((_, sub) => sub?.cancel());
+    likeSubscriptions.forEach((_, sub) => sub?.cancel());
+    authorSubscriptions.forEach((_, sub) => sub?.cancel());
+    _currentUserSubscription?.cancel();
     _connectivitySubscription?.cancel();
     _scrollController.dispose();
     super.dispose();
@@ -129,6 +139,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           userData = userDoc.data() as Map<String, dynamic>?;
           userCache[user.uid] = userData;
         });
+        _setupCurrentUserListener(user.uid);
       }
     } catch (e) {
       print('Error fetching user data: $e');
@@ -140,19 +151,89 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     }
   }
 
-  Future<void> _fetchInitialPosts() async {
-    if (!hasConnection) {
+  void _setupCurrentUserListener(String uid) {
+    _currentUserSubscription?.cancel();
+    _currentUserSubscription = _firestore.collection('users').doc(uid).snapshots().listen((doc) {
+      if (!doc.exists) return;
+      final Map<String, dynamic>? data = doc.data();
+      if (data == null) return;
       setState(() {
-        isLoading = false;
+        userData = data;
+        userCache[uid] = data;
       });
-      return;
-    }
+    }, onError: (e) {
+      // silent
+    });
+  }
+
+  void _attachAuthorListener(String userId) {
+    if (userId.isEmpty) return;
+    if (authorSubscriptions.containsKey(userId)) return;
+    authorSubscriptions[userId] = _firestore.collection('users').doc(userId).snapshots().listen((doc) {
+      if (!doc.exists) return;
+      final Map<String, dynamic>? data = doc.data();
+      if (data == null) return;
+      userCache[userId] = data;
+      if (mounted) setState(() {});
+    }, onError: (_) {});
+  }
+
+  void _attachLikeListener(String postId) {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+    // Dispose any previous listener for this postId
+    likeSubscriptions[postId]?.cancel();
+    likeSubscriptions[postId] = _firestore
+        .collection('posts')
+        .doc(postId)
+        .collection('likes')
+        .doc(uid)
+        .snapshots()
+        .listen((doc) {
+      if (!doc.exists) {
+        userReactions[postId] = '';
+      } else {
+        try {
+          userReactions[postId] = (doc.get('reaction') ?? 'like') as String;
+        } catch (_) {
+          userReactions[postId] = 'like';
+        }
+      }
+      if (mounted) setState(() {});
+    }, onError: (_) {});
+  }
+
+  Future<void> _fetchInitialPosts() async {
     try {
-      QuerySnapshot postsSnapshot = await _firestore
+      Query query = _firestore
           .collection('posts')
           .where('is_private', isEqualTo: false)
-          .orderBy('timestamp', descending: true)
-          .get();
+          .orderBy('timestamp', descending: true);
+
+      QuerySnapshot postsSnapshot;
+      try {
+        // Try cache first so UI shows instantly even offline
+        postsSnapshot = await query.get(const GetOptions(source: Source.cache));
+        // If cache is empty and we have connectivity, fall back to server
+        if ((postsSnapshot.docs.isEmpty) && hasConnection) {
+          postsSnapshot = await query.get();
+        }
+      } catch (_) {
+        // If orderBy requires index or cache miss, try unordered, sorted client-side
+        try {
+          final unordered = await _firestore
+              .collection('posts')
+              .where('is_private', isEqualTo: false)
+              .get(const GetOptions(source: Source.cache));
+          postsSnapshot = unordered;
+        } catch (e) {
+          // Final fallback to server unordered
+          postsSnapshot = await _firestore
+              .collection('posts')
+              .where('is_private', isEqualTo: false)
+              .get();
+        }
+      }
 
       List<Map<String, dynamic>> postsList = [];
       for (var doc in postsSnapshot.docs) {
@@ -162,25 +243,14 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
-          Map<String, dynamic>? postUserData;
-          if (userCache.containsKey(userId)) {
-            postUserData = userCache[userId];
-          } else {
-            DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
-            if (userDoc.exists) {
-              postUserData = userDoc.data() as Map<String, dynamic>;
-              userCache[userId] = postUserData;
-            }
-          }
+          Map<String, dynamic>? postUserData = userCache[userId];
+          // Attach listener (will populate cache and refresh UI when it arrives)
+          _attachAuthorListener(userId);
 
-          DocumentSnapshot likesDoc = await _firestore
-              .collection('posts')
-              .doc(postId)
-              .collection('likes')
-              .doc(_auth.currentUser?.uid)
-              .get();
-
-          String userReaction = likesDoc.exists ? (likesDoc.get('reaction') ?? 'like') : '';
+          // Seed current reaction; live updates are handled by _attachLikeListener
+          // Seed current reaction lazily via listener to avoid extra round-trips
+          userReactions[postId] = userReactions[postId] ?? '';
+          _attachLikeListener(postId);
 
           postsList.add({
             'id': postId,
@@ -190,22 +260,41 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
           postLikes[postId] = postData['likes_count'] ?? 0;
           postCommentCounts[postId] = postData['comments_count'] ?? 0;
-          userReactions[postId] = userReaction;
 
           // Defer video initialization until the post is visible to improve load performance.
           if ((postData['video_url'] as String?)?.isNotEmpty ?? false) {
             videoPlayerControllers[postId] = null;
             videoControllers[postId] = null;
           }
+          // Attempt to resolve an accessible image URL (signed fallback) asynchronously
+          final imgUrl = (postData['image_url'] ?? '') as String;
+          if (imgUrl.isNotEmpty) {
+            _resolveImageUrl(imgUrl).then((resolved) {
+              if (resolved != null && mounted) {
+                setState(() {
+                  resolvedImageUrls[postId] = resolved;
+                });
+              }
+            });
+          }
         } catch (postError) {
           print('Error processing post ${doc.id}: $postError');
         }
       }
 
+      // Ensure newest first in case unordered fallback was used
+      postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
       setState(() {
         posts = postsList;
         isLoading = false;
       });
+      // Clean up like listeners for posts no longer present
+      final currentIds = postsList.map((p) => p['id'] as String).toSet();
+      final toRemove = likeSubscriptions.keys.where((k) => !currentIds.contains(k)).toList();
+      for (final k in toRemove) {
+        likeSubscriptions[k]?.cancel();
+        likeSubscriptions.remove(k);
+      }
     } catch (e) {
       print('Error fetching initial posts: $e');
       if (e is FirebaseException && e.code == 'permission-denied') {
@@ -221,13 +310,14 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
   void _setupPostsListener() {
     _postsSubscription?.cancel();
-    _postsSubscription = _firestore
+    final baseQuery = _firestore
         .collection('posts')
         .where('is_private', isEqualTo: false)
-        .orderBy('timestamp', descending: true)
-        .snapshots()
-        .listen((snapshot) async {
-      if (!hasConnection) return;
+        .orderBy('timestamp', descending: true);
+
+    // Use includeMetadataChanges so cache-only updates still trigger rebuilds
+    _postsSubscription = baseQuery.snapshots(includeMetadataChanges: true).listen((snapshot) async {
+      // Do not block on connectivity; let cache drive UI when offline
       List<Map<String, dynamic>> postsList = [];
       for (var doc in snapshot.docs) {
         try {
@@ -236,25 +326,12 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
-          Map<String, dynamic>? postUserData;
-          if (userCache.containsKey(userId)) {
-            postUserData = userCache[userId];
-          } else {
-            DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
-            if (userDoc.exists) {
-              postUserData = userDoc.data() as Map<String, dynamic>;
-              userCache[userId] = postUserData;
-            }
-          }
+          Map<String, dynamic>? postUserData = userCache[userId];
+          _attachAuthorListener(userId);
 
-          DocumentSnapshot likesDoc = await _firestore
-              .collection('posts')
-              .doc(postId)
-              .collection('likes')
-              .doc(_auth.currentUser?.uid)
-              .get();
-
-          String userReaction = likesDoc.exists ? (likesDoc.get('reaction') ?? 'like') : '';
+          // Defer reaction resolution to dedicated like listener (fewer round-trips)
+          final String userReaction = userReactions[postId] ?? '';
+          _attachLikeListener(postId);
 
           postsList.add({
             'id': postId,
@@ -266,11 +343,24 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           postCommentCounts[postId] = postData['comments_count'] ?? 0;
           userReactions[postId] = userReaction;
           // videos are handled lazily when user opens a video player screen
+          // Resolve image URL (signed fallback) asynchronously
+          final imgUrl = (postData['image_url'] ?? '') as String;
+          if (imgUrl.isNotEmpty) {
+            _resolveImageUrl(imgUrl).then((resolved) {
+              if (resolved != null && mounted) {
+                setState(() {
+                  resolvedImageUrls[postId] = resolved;
+                });
+              }
+            });
+          }
         } catch (postError) {
           print('Error processing post ${doc.id}: $postError');
         }
       }
 
+      // Ensure newest first even if server ordering is unavailable
+      postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
       setState(() {
         posts = postsList;
         isLoading = false;
@@ -359,11 +449,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       }
 
       if (_selectedVideo != null) {
-        final status = await Permission.videos.status;
-        if (!status.isGranted) {
-          await _requestPermissions(Permission.videos);
-          if (!await Permission.videos.isGranted) return;
-        }
         final String fileName = 'video_${user.uid}_${DateTime.now().millisecondsSinceEpoch}.mp4';
         videoUrl = await sb.uploadVideo(_selectedVideo!, fileName: fileName);
       }
@@ -406,8 +491,121 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       if (e is FirebaseException && e.code == 'permission-denied') {
         // Handle silently
       } else {
-        // Avoid toast
+        Fluttertoast.showToast(msg: 'Failed to create post: $e');
       }
+    }
+  }
+
+  Future<void> _editPost(String postId, String currentText) async {
+    try {
+      final controller = TextEditingController(text: currentText);
+      final newText = await showDialog<String>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Edit post'),
+            content: TextField(
+              controller: controller,
+              maxLines: null,
+              decoration: const InputDecoration(hintText: 'Update your post text'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, controller.text.trim()),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (newText == null) return;
+      if (newText == currentText || newText.isEmpty) return;
+
+      await _firestore.collection('posts').doc(postId).update({
+        'text': newText,
+        'edited': true,
+      });
+
+      // Optimistic local update
+      final idx = posts.indexWhere((p) => p['id'] == postId);
+      if (idx != -1) {
+        setState(() {
+          posts[idx]['text'] = newText;
+          posts[idx]['edited'] = true;
+        });
+      }
+    } catch (e) {
+      print('Error editing post: $e');
+      // silent on permission errors
+    }
+  }
+
+  Future<void> _deletePost(String postId) async {
+    try {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Delete post?'),
+          content: const Text('This action cannot be undone.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+
+      await _firestore.collection('posts').doc(postId).delete();
+
+      // Clean up listeners/controllers and remove from local list
+      likeSubscriptions[postId]?.cancel();
+      likeSubscriptions.remove(postId);
+      commentSubscriptions[postId]?.cancel();
+      commentSubscriptions.remove(postId);
+      try {
+        await videoControllers[postId]?.pause();
+      } catch (_) {}
+      try {
+        videoControllers[postId]?.dispose();
+      } catch (_) {}
+      videoControllers.remove(postId);
+      try {
+        await videoPlayerControllers[postId]?.dispose();
+      } catch (_) {}
+      videoPlayerControllers.remove(postId);
+
+      setState(() {
+        posts.removeWhere((p) => p['id'] == postId);
+        postLikes.remove(postId);
+        postCommentCounts.remove(postId);
+        userReactions.remove(postId);
+        resolvedImageUrls.remove(postId);
+      });
+    } catch (e) {
+      print('Error deleting post: $e');
+    }
+  }
+
+  Future<void> _togglePostPrivacy(String postId, bool isPrivateNow) async {
+    try {
+      final newVal = !isPrivateNow;
+      await _firestore.collection('posts').doc(postId).update({'is_private': newVal});
+
+      // If becomes private, it should disappear from public newsfeed immediately
+      if (newVal) {
+        setState(() {
+          posts.removeWhere((p) => p['id'] == postId);
+        });
+      } else {
+        // If becomes public, keep local state; the listener will add it if it matches the query
+      }
+    } catch (e) {
+      print('Error toggling privacy: $e');
     }
   }
 
@@ -437,12 +635,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
   Future<void> _pickVideo() async {
     try {
-      final status = await Permission.videos.status;
-      if (!status.isGranted) {
-        await _requestPermissions(Permission.videos);
-        if (!await Permission.videos.isGranted) return;
-      }
-
       final XFile? pickedFile = await _imagePicker.pickVideo(
         source: ImageSource.gallery,
       );
@@ -570,9 +762,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   Future<void> _toggleLike(String postId, String reaction) async {
     try {
       final firebase_auth.User? user = _auth.currentUser;
-      if (user == null) {
-        return;
-      }
+      if (user == null) return;
 
       final docRef = _firestore
           .collection('posts')
@@ -580,9 +770,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           .collection('likes')
           .doc(user.uid);
 
-      DocumentSnapshot likeDoc = await docRef.get();
-      bool wasLiked = likeDoc.exists;
-      String oldReaction = wasLiked ? (likeDoc.get('reaction') ?? 'like') : '';
+      final likeDoc = await docRef.get();
+      final bool wasLiked = likeDoc.exists;
+      final String oldReaction = wasLiked ? (likeDoc.get('reaction') ?? 'like') : '';
 
       if (wasLiked && oldReaction == reaction) {
         // Unlike
@@ -622,26 +812,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         // Avoid toast
       }
     }
-  }
-
-  void _showReactionOptions(String postId) {
-    showModalBottomSheet(
-      context: context,
-      builder: (BuildContext context) {
-        return Container(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildReactionButton('❤️', 'love', postId),
-              _buildReactionButton('😊', 'like', postId),
-              _buildReactionButton('😢', 'sad', postId),
-              _buildReactionButton('😠', 'angry', postId),
-            ],
-          ),
-        );
-      },
-    );
   }
 
   Future<void> _initVideoControllers(String postId, String url) async {
@@ -701,8 +871,23 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       client.close(force: true);
       return ok;
     } catch (e) {
-      print('URL validation error for $url: $e');
-      return false;
+      // Fallback to GET with Range if HEAD is blocked
+      try {
+        final uri = Uri.parse(url);
+        final client = HttpClient();
+        client.userAgent = 'MyApp/1.0';
+        final req = await client.getUrl(uri);
+        req.headers.add('Range', 'bytes=0-0');
+        final resp = await req.close();
+        final status = resp.statusCode;
+        final ok = (status >= 200 && status < 300) || status == 206;
+        print('GET(range) $url -> $status');
+        client.close(force: true);
+        return ok;
+      } catch (e2) {
+        print('URL validation error for $url: $e2');
+        return false;
+      }
     }
   }
 
@@ -741,6 +926,28 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     }
   }
 
+  Future<String?> _resolveImageUrl(String url) async {
+    final ok = await _validateUrlExists(url);
+    if (ok) return url;
+    try {
+      final marker = '/storage/v1/object/public/';
+      final idx = url.indexOf(marker);
+      if (idx == -1) return null;
+      final tail = url.substring(idx + marker.length);
+      final parts = tail.split('/');
+      if (parts.length < 2) return null;
+      final bucket = parts[0];
+      final objectPath = parts.sublist(1).join('/');
+      final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
+      final String? signedUrl = signed?.toString();
+      if (signedUrl == null) return null;
+      if (await _validateUrlExists(signedUrl)) return signedUrl;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Widget _buildReactionButton(String emoji, String reaction, String postId) {
     return GestureDetector(
       onTap: () {
@@ -767,6 +974,28 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       default:
         return '👍';
     }
+  }
+
+  void _showReactionOptions(String postId) {
+    showModalBottomSheet(
+      context: context,
+      builder: (c) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildReactionButton('❤️', 'love', postId),
+                _buildReactionButton('😊', 'like', postId),
+                _buildReactionButton('😢', 'sad', postId),
+                _buildReactionButton('😠', 'angry', postId),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -944,6 +1173,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     final int likesCount = postLikes[postId] ?? 0;
     final int commentsCount = postCommentCounts[postId] ?? 0;
     final String userReaction = userReactions[postId] ?? '';
+    final String? currentUid = _auth.currentUser?.uid;
+    final bool isOwner = currentUid != null && post['user_id'] == currentUid;
+    final bool isPrivate = (post['is_private'] ?? false) as bool;
 
     if (!likeAnimationControllers.containsKey(postId)) {
       likeAnimationControllers[postId] = AnimationController(
@@ -959,52 +1191,96 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => SeeProfileFromNewsfeed(userId: post['user_id']),
-                  ),
-                );
-              },
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: Colors.grey[300],
-                    backgroundImage: post['user_data']?['profile_image'] != null
-                        ? CachedNetworkImageProvider(post['user_data']['profile_image'])
-                        : null,
-                    child: post['user_data']?['profile_image'] == null
-                        ? const Icon(Icons.person, size: 20, color: Colors.grey)
-                        : null,
-                  ),
-                  const SizedBox(width: 10),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        post['user_data']?['name'] ?? 'Unknown User',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => SeeProfileFromNewsfeed(userId: post['user_id']),
                       ),
-                      Text(
-                        DateFormat('MMM dd, yyyy - HH:mm').format(
-                          DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
-                        ),
-                        style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    );
+                  },
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 20,
+                        backgroundColor: Colors.grey[300],
+                        backgroundImage: post['user_data']?['profile_image'] != null
+                            ? CachedNetworkImageProvider(post['user_data']['profile_image'])
+                            : null,
+                        child: post['user_data']?['profile_image'] == null
+                            ? const Icon(Icons.person, size: 20, color: Colors.grey)
+                            : null,
+                      ),
+                      const SizedBox(width: 10),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            post['user_data']?['name'] ?? 'Unknown User',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Row(
+                            children: [
+                              Text(
+                                DateFormat('MMM dd, yyyy - HH:mm').format(
+                                  DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
+                                ),
+                                style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              ),
+                              if (isOwner) ...[
+                                const SizedBox(width: 8),
+                                Icon(
+                                  isPrivate ? Icons.lock : Icons.public,
+                                  size: 14,
+                                  color: Colors.grey,
+                                ),
+                              ],
+                            ],
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
-              ),
+                ),
+                const Spacer(),
+                if (isOwner)
+                  PopupMenuButton<String>(
+                    onSelected: (value) {
+                      if (value == 'edit') {
+                        _editPost(postId, (post['text'] ?? '') as String);
+                      } else if (value == 'privacy') {
+                        _togglePostPrivacy(postId, isPrivate);
+                      } else if (value == 'delete') {
+                        _deletePost(postId);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem<String>(
+                        value: 'edit',
+                        child: Text('Edit post'),
+                      ),
+                      PopupMenuItem<String>(
+                        value: 'privacy',
+                        child: Text(isPrivate ? 'Make public' : 'Make private'),
+                      ),
+                      const PopupMenuItem<String>(
+                        value: 'delete',
+                        child: Text('Delete post'),
+                      ),
+                    ],
+                  ),
+              ],
             ),
             const SizedBox(height: 10),
             if (post['text']?.isNotEmpty ?? false) Text(post['text']),
             const SizedBox(height: 10),
             if (post['image_url']?.isNotEmpty ?? false)
               CachedNetworkImage(
-                imageUrl: post['image_url'],
+                imageUrl: resolvedImageUrls[postId] ?? post['image_url'],
                 placeholder: (context, url) => const SizedBox(
                   height: 200,
                   child: Center(child: CircularProgressIndicator()),

@@ -7,7 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'supabase.dart' as sb;
 import 'videos.dart';
-import 'newsfeed.dart'; // Assuming newsfeed.dart exists and contains NewsfeedPage or similar
+// import 'newsfeed.dart'; // No direct usage here
 import 'see_profile_from_newsfeed.dart';
 
 /// Conversations list and chat screen.
@@ -22,6 +22,8 @@ class _MessagesPageState extends State<MessagesPage> {
   final firebase_auth.FirebaseAuth _auth = firebase_auth.FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   Map<String, dynamic>? currentUserData;
+  // Track bubbles dismissed by the user so they don't reappear immediately
+  final Set<String> _dismissedBubbleIds = <String>{};
 
   @override
   void initState() {
@@ -74,7 +76,7 @@ class _MessagesPageState extends State<MessagesPage> {
         stream: _firestore
           .collection('conversations')
           .where('participants', arrayContains: uid)
-          .snapshots(),
+          .snapshots(includeMetadataChanges: true),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             debugPrint('Conversations stream error: ${snapshot.error}');
@@ -104,7 +106,26 @@ class _MessagesPageState extends State<MessagesPage> {
 
           if (convs.isEmpty) return const Center(child: Text('No conversations'));
 
-          return ListView.builder(
+          // Determine the top-most unread conversation for bubble overlay (if any)
+          QueryDocumentSnapshot? topUnreadDoc;
+          Map<String, dynamic>? topUnreadData;
+          String? topUnreadOtherId;
+          for (final item in convs) {
+            if (item['unread'] == true) {
+              final d = item['doc'] as QueryDocumentSnapshot;
+              if (_dismissedBubbleIds.contains(d.id)) continue;
+              final data = item['data'] as Map<String, dynamic>;
+              final participants = List<String>.from(data['participants'] ?? <String>[]);
+              final otherId = participants.firstWhere((p) => p != uid, orElse: () => '');
+              if (otherId.isEmpty) continue;
+              topUnreadDoc = d;
+              topUnreadData = data;
+              topUnreadOtherId = otherId;
+              break; // pick the first unread (already sorted by latest)
+            }
+          }
+
+          final Widget listView = ListView.builder(
             itemCount: convs.length,
             itemBuilder: (context, index) {
               final d = convs[index]['doc'] as QueryDocumentSnapshot;
@@ -113,8 +134,7 @@ class _MessagesPageState extends State<MessagesPage> {
               final otherId = participants.firstWhere((p) => p != uid, orElse: () => '');
               final lastMessage = data['last_message'] ?? '';
               final lastUpdated = data['last_updated'] ?? 0;
-              final archivedMap = Map<String, dynamic>.from(data['archived'] ?? <String, dynamic>{});
-              final isArchived = archivedMap[uid] == true;
+              // final archivedMap = Map<String, dynamic>.from(data['archived'] ?? <String, dynamic>{});
               final unread = convs[index]['unread'] as bool;
 
               if (otherId.isEmpty) {
@@ -132,8 +152,8 @@ class _MessagesPageState extends State<MessagesPage> {
                 );
               }
 
-              return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                future: _firestore.collection('users').doc(otherId).get(),
+              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: _firestore.collection('users').doc(otherId).snapshots(includeMetadataChanges: true),
                 builder: (context, userSnap) {
                   String title = otherId;
                   String? avatarUrl;
@@ -227,6 +247,45 @@ class _MessagesPageState extends State<MessagesPage> {
               );
             },
           );
+
+          // If there's a top unread conversation and it's not dismissed, show a bubble overlay
+          if (topUnreadDoc != null && topUnreadData != null && topUnreadOtherId != null) {
+            // Capture non-null locals for use in closures
+            final String _docId = topUnreadDoc.id;
+            final String _otherId = topUnreadOtherId;
+            final String _lastMsg = (topUnreadData['last_message'] ?? '') as String;
+            return Stack(
+              children: [
+                listView,
+                Positioned(
+                  right: 16,
+                  bottom: 24,
+                  child: _NewMessageBubble(
+                    otherUserId: _otherId,
+                    lastMessage: _lastMsg,
+                    onOpen: () async {
+                      await _markConversationRead(_docId, uid);
+                      if (mounted) {
+                        Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => ChatPage(
+                            conversationId: _docId,
+                            otherUserId: _otherId,
+                          ),
+                        ));
+                      }
+                    },
+                    onDismiss: () {
+                      setState(() {
+                        _dismissedBubbleIds.add(_docId);
+                      });
+                    },
+                  ),
+                ),
+              ],
+            );
+          }
+
+          return listView;
         },
       ),
     );
@@ -505,7 +564,6 @@ class _ChatPageState extends State<ChatPage> {
   final ImagePicker _picker = ImagePicker();
   bool _sending = false;
   final ScrollController _scrollController = ScrollController();
-  bool _isTyping = false;
 
   @override
   void initState() {
@@ -669,7 +727,7 @@ class _ChatPageState extends State<ChatPage> {
 
     return Scaffold(
       appBar: AppBar(
-        // Removed the back button from appBar
+        leading: BackButton(onPressed: () => Navigator.pop(context)),
         title: StreamBuilder<DocumentSnapshot>(
           stream: _firestore.collection('users').doc(widget.otherUserId).snapshots(),
           builder: (context, snapshot) {
@@ -1158,5 +1216,105 @@ class _ChatPageState extends State<ChatPage> {
     } catch (e) {
       debugPrint('Error toggling reaction: $e');
     }
+  }
+}
+
+/// A small floating bubble that previews a new/unread message and opens the chat when tapped.
+class _NewMessageBubble extends StatelessWidget {
+  final String otherUserId;
+  final String lastMessage;
+  final VoidCallback onOpen;
+  final VoidCallback onDismiss;
+
+  const _NewMessageBubble({
+    required this.otherUserId,
+    required this.lastMessage,
+    required this.onOpen,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final FirebaseFirestore firestore = FirebaseFirestore.instance;
+    return Material(
+      color: Colors.transparent,
+      child: GestureDetector(
+        onTap: onOpen,
+        child: Dismissible(
+          key: ValueKey('bubble_$otherUserId'),
+          direction: DismissDirection.down,
+          onDismissed: (_) => onDismiss(),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 280),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: const [
+                BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 4)),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                  future: firestore.collection('users').doc(otherUserId).get(),
+                  builder: (context, snap) {
+                    String name = otherUserId;
+                    String? avatarUrl;
+                    if (snap.hasData && snap.data != null && snap.data!.exists) {
+                      final u = snap.data!.data();
+                      name = (u?['name'] as String?)?.trim().isNotEmpty == true ? u!['name'] as String : otherUserId;
+                      avatarUrl = u?['profile_image'] as String?;
+                    }
+                    return Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        (avatarUrl != null && avatarUrl.isNotEmpty)
+                            ? CircleAvatar(backgroundImage: CachedNetworkImageProvider(avatarUrl))
+                            : CircleAvatar(
+                                backgroundColor: Colors.blue,
+                                child: Text(
+                                  name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                name,
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: const TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                lastMessage.isNotEmpty ? lastMessage : 'New message',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: const TextStyle(color: Colors.black54),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        InkWell(
+                          onTap: onDismiss,
+                          child: const Icon(Icons.close, size: 18, color: Colors.black45),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -19,11 +20,22 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
   int postsCount = 0;
   int followersCount = 0;
   int followingCount = 0;
+  StreamSubscription<DocumentSnapshot>? _userSub;
+  StreamSubscription<QuerySnapshot>? _postsSub;
 
   @override
   void initState() {
     super.initState();
     _fetchUserData();
+    _setupUserListener();
+    _setupPostsCountListener();
+  }
+
+  @override
+  void dispose() {
+    _userSub?.cancel();
+    _postsSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _fetchUserData() async {
@@ -72,6 +84,38 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
         isLoading = false;
       });
     }
+  }
+
+  void _setupUserListener() {
+    _userSub?.cancel();
+    _userSub = _firestore.collection('users').doc(widget.userId).snapshots().listen((doc) {
+      if (!doc.exists) return;
+  final data = doc.data();
+      if (data == null) return;
+      setState(() {
+        userData = data;
+        followersCount = data['followers_count'] ?? followersCount;
+        followingCount = data['following_count'] ?? followingCount;
+        isLoading = false;
+      });
+    }, onError: (e) {
+      print('User realtime listener error: $e');
+    });
+  }
+
+  void _setupPostsCountListener() {
+    _postsSub?.cancel();
+    _postsSub = _firestore
+        .collection('posts')
+        .where('user_id', isEqualTo: widget.userId)
+        .snapshots()
+        .listen((snap) {
+      setState(() {
+        postsCount = snap.docs.length;
+      });
+    }, onError: (e) {
+      print('Posts count listener error: $e');
+    });
   }
 
   @override

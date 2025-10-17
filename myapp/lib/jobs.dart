@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import 'supabase.dart' as sb;
 
@@ -172,28 +173,25 @@ class _JobsPageState extends State<JobsPage> {
             // Image if available
             if (imageUrl.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Container(
-                height: 200,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Image.network(
-                  imageUrl,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: CachedNetworkImage(
+                  imageUrl: imageUrl,
                   fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: Colors.grey[200],
-                      child: const Icon(Icons.error, color: Colors.red),
-                    );
-                  },
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return Container(
-                      color: Colors.grey[200],
-                      child: const Center(child: CircularProgressIndicator()),
-                    );
-                  },
+                  height: 200,
+                  width: double.infinity,
+                  placeholder: (context, url) => Container(
+                    color: Colors.grey[200],
+                    height: 200,
+                    width: double.infinity,
+                    child: const Center(child: CircularProgressIndicator()),
+                  ),
+                  errorWidget: (context, url, error) => Container(
+                    color: Colors.grey[200],
+                    height: 200,
+                    width: double.infinity,
+                    child: const Icon(Icons.error, color: Colors.red),
+                  ),
                 ),
               ),
             ],
@@ -234,8 +232,7 @@ class _JobsPageState extends State<JobsPage> {
               stream: FirebaseFirestore.instance
                   .collection('posts')
                   .where('post_type', isEqualTo: 'job')
-                  .orderBy('timestamp', descending: true)
-                  .snapshots(),
+                  .snapshots(includeMetadataChanges: true),
               builder: (context, snapshot) {
                 // Debug: Print snapshot state
                 print('Snapshot connection state: ${snapshot.connectionState}');
@@ -260,7 +257,15 @@ class _JobsPageState extends State<JobsPage> {
                   return const Center(child: CircularProgressIndicator());
                 }
                 
-                final docs = snapshot.data?.docs ?? [];
+                final docs = List<QueryDocumentSnapshot>.from(snapshot.data?.docs ?? const []);
+                // Sort client-side to avoid index dependency, newest first
+                docs.sort((a, b) {
+                  final ad = (a.data() as Map<String, dynamic>?)?['timestamp'];
+                  final bd = (b.data() as Map<String, dynamic>?)?['timestamp'];
+                  int ai = ad is int ? ad : (ad is Timestamp ? ad.millisecondsSinceEpoch : 0);
+                  int bi = bd is int ? bd : (bd is Timestamp ? bd.millisecondsSinceEpoch : 0);
+                  return bi.compareTo(ai);
+                });
                 print('Number of job posts found: ${docs.length}');
                 
                 if (docs.isEmpty) {

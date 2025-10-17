@@ -1,6 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:io';
-import 'package:path/path.dart';
+import 'package:path/path.dart' as p;
 import 'dart:async';
 
 class SupabaseConfig {
@@ -19,10 +19,30 @@ SupabaseClient get supabase => Supabase.instance.client;
 
 Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'profile-images'}) async {
   try {
-    final String finalFileName = fileName ?? '${folder}/${DateTime.now().millisecondsSinceEpoch}${extension(imageFile.path)}';
+    // Use provided fileName or generate a simple timestamped name WITHOUT bucket prefix
+    final String finalFileName = fileName ?? '${DateTime.now().millisecondsSinceEpoch}${p.extension(imageFile.path)}';
+
+    // Derive a reasonable contentType from file extension
+    final String ext = p.extension(imageFile.path).toLowerCase();
+    String? contentType;
+    if (ext == '.jpg' || ext == '.jpeg') contentType = 'image/jpeg';
+    else if (ext == '.png') contentType = 'image/png';
+    else if (ext == '.gif') contentType = 'image/gif';
+    else if (ext == '.webp') contentType = 'image/webp';
+    else if (ext == '.mp4') contentType = 'video/mp4';
+    else if (ext == '.mov') contentType = 'video/quicktime';
+    else if (ext == '.mkv') contentType = 'video/x-matroska';
 
     // Try upload with upsert true so retries won't fail on duplicates.
-    await supabase.storage.from(folder).upload(finalFileName, imageFile, fileOptions: FileOptions(upsert: true));
+    await supabase.storage.from(folder).upload(
+      finalFileName,
+      imageFile,
+      fileOptions: FileOptions(
+        upsert: true,
+        contentType: contentType,
+        cacheControl: '3600',
+      ),
+    );
     final String publicUrl = supabase.storage.from(folder).getPublicUrl(finalFileName);
 
     // Validate public URL is accessible. If not, try to create a signed URL
@@ -59,8 +79,23 @@ Future<bool> _headOk(String url) async {
     client.close(force: true);
     return ok;
   } catch (e) {
-    print('HEAD request failed for $url: $e');
-    return false;
+    // Try GET with Range as fallback (some servers may not allow HEAD)
+    try {
+      final uri = Uri.parse(url);
+      final client = HttpClient();
+      client.userAgent = 'MyApp/1.0';
+      final req = await client.getUrl(uri);
+      req.headers.add('Range', 'bytes=0-0');
+      final resp = await req.close();
+      final status = resp.statusCode;
+      client.close(force: true);
+      final ok = (status >= 200 && status < 300) || status == 206;
+      if (!ok) print('HEAD+GET(range) failed for $url, status=$status');
+      return ok;
+    } catch (e2) {
+      print('HEAD and GET(range) failed for $url: $e2');
+      return false;
+    }
   }
 }
 

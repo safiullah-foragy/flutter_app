@@ -12,61 +12,70 @@ class VideosPage extends StatefulWidget {
 
 class _VideosPageState extends State<VideosPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  bool isLoading = true;
-  List<Map<String, dynamic>> videos = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadVideos();
-  }
-
-  Future<void> _loadVideos() async {
-    try {
-      final snapshot = await _firestore.collection('posts').where('video_url', isGreaterThan: '').get();
-      videos = snapshot.docs.map((d) {
-        final data = d.data() as Map<String, dynamic>?;
-        return {'id': d.id, ...?data};
-      }).toList();
-    } catch (e) {
-      print('Error loading videos: $e');
-    }
-    setState(() {
-      isLoading = false;
-    });
-  }
+  // List is provided by a StreamBuilder below; no local cache needed
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Videos')),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : videos.isEmpty
-              ? const Center(child: Text('No videos'))
-              : ListView.builder(
-                  itemCount: videos.length,
-                  itemBuilder: (context, index) {
-                    final v = videos[index];
-                    final url = (v['video_url'] as String?) ?? '';
-                      return ListTile(
-                        title: Text(v['text'] ?? 'Video'),
-                        subtitle: Text(v['user_id'] ?? ''),
-                        onTap: () {
-                          if (url.isNotEmpty) {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) => VideoPlayerScreen(
-                                        videos: videos,
-                                        startIndex: index,
-                                      )),
-                            );
-                          }
-                        },
-                      );
-                  },
-                ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _firestore
+            .collection('posts')
+            .where('video_url', isGreaterThan: '')
+            .snapshots(includeMetadataChanges: true),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final docs = List<QueryDocumentSnapshot>.from(snapshot.data!.docs);
+          // Newest first by timestamp if available
+          docs.sort((a, b) {
+            final ad = (a.data() as Map<String, dynamic>?); 
+            final bd = (b.data() as Map<String, dynamic>?);
+            final at = ad?['timestamp'];
+            final bt = bd?['timestamp'];
+            int ai = at is int ? at : (at is Timestamp ? at.millisecondsSinceEpoch : 0);
+            int bi = bt is int ? bt : (bt is Timestamp ? bt.millisecondsSinceEpoch : 0);
+            return bi.compareTo(ai);
+          });
+          final videos = docs.map((d) {
+            final data = d.data() as Map<String, dynamic>?;
+            return {'id': d.id, ...?data};
+          }).toList();
+
+          if (videos.isEmpty) {
+            return const Center(child: Text('No videos'));
+          }
+
+          return ListView.builder(
+            itemCount: videos.length,
+            itemBuilder: (context, index) {
+              final v = videos[index];
+              final url = (v['video_url'] as String?) ?? '';
+              return ListTile(
+                title: Text(v['text'] ?? 'Video'),
+                subtitle: Text(v['user_id'] ?? ''),
+                onTap: () {
+                  if (url.isNotEmpty) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => VideoPlayerScreen(
+                          videos: videos,
+                          startIndex: index,
+                        ),
+                      ),
+                    );
+                  }
+                },
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }

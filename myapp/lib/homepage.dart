@@ -32,6 +32,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool isLoading = true;
   bool isUploading = false;
   final Map<String, TextEditingController> _controllers = {};
+  StreamSubscription<DocumentSnapshot>? _userSubscription;
   
   late AnimationController _animationController;
   late Animation<Offset> _slideAnimation;
@@ -59,6 +60,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _firestore.settings = const Settings(persistenceEnabled: true);
     _checkConnectivity();
     _fetchUserData();
+    _setupUserListener();
     _updateLastLogin();
     _fetchInitialUserPosts();
     _setupPostsListener();
@@ -103,6 +105,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     videoControllers.forEach((_, controller) => controller?.dispose());
     videoPlayerControllers.forEach((_, controller) => controller?.dispose());
     likeAnimationControllers.forEach((_, controller) => controller?.dispose());
+    _userSubscription?.cancel();
     _postsSubscription?.cancel();
     commentSubscriptions.forEach((_, sub) => sub?.cancel());
     _connectivitySubscription?.cancel();
@@ -168,6 +171,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
+  void _setupUserListener() {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    _userSubscription?.cancel();
+    _userSubscription = _firestore.collection('users').doc(user.uid).snapshots().listen(
+      (doc) {
+        if (!doc.exists) return;
+        final data = doc.data();
+        if (data == null) return;
+        setState(() {
+          userData = data;
+          // Keep bound text fields in sync
+          _controllers['name'] ??= TextEditingController();
+          _controllers['dob'] ??= TextEditingController();
+          _controllers['current_job'] ??= TextEditingController();
+          _controllers['experience'] ??= TextEditingController();
+          _controllers['session'] ??= TextEditingController();
+          _controllers['name']!.text = data['name'] ?? '';
+          _controllers['dob']!.text = data['dob'] ?? '';
+          _controllers['current_job']!.text = data['current_job'] ?? '';
+          _controllers['experience']!.text = data['experience'] ?? '';
+          _controllers['session']!.text = data['session'] ?? '';
+          isLoading = false;
+        });
+      },
+      onError: (e) => print('User listener error: $e'),
+    );
+  }
+
   Future<void> _fetchInitialUserPosts() async {
     if (!hasConnection) {
       setState(() {});
@@ -176,11 +208,38 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     try {
       final User? user = _auth.currentUser;
       if (user == null) return;
-      QuerySnapshot postsSnapshot = await _firestore
+      QuerySnapshot postsSnapshot;
+      final orderedQuery = _firestore
           .collection('posts')
           .where('user_id', isEqualTo: user.uid)
-          .orderBy('timestamp', descending: true)
-          .get();
+          .orderBy('timestamp', descending: true);
+      try {
+        // Cache first for instant UI
+        postsSnapshot = await orderedQuery.get(const GetOptions(source: Source.cache));
+        if (postsSnapshot.docs.isEmpty) {
+          // If cache empty, try server
+          postsSnapshot = await orderedQuery.get();
+        }
+      } catch (e) {
+        // Fallback without orderBy; sort client-side
+        try {
+          postsSnapshot = await _firestore
+              .collection('posts')
+              .where('user_id', isEqualTo: user.uid)
+              .get(const GetOptions(source: Source.cache));
+          if (postsSnapshot.docs.isEmpty) {
+            postsSnapshot = await _firestore
+                .collection('posts')
+                .where('user_id', isEqualTo: user.uid)
+                .get();
+          }
+        } catch (_) {
+          postsSnapshot = await _firestore
+              .collection('posts')
+              .where('user_id', isEqualTo: user.uid)
+              .get();
+        }
+      }
 
       List<Map<String, dynamic>> postsList = [];
       for (var doc in postsSnapshot.docs) {
@@ -229,6 +288,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         }
       }
 
+      // Ensure newest first if fallback path used
+      postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
+      postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
       setState(() {
         userPosts = postsList;
       });
@@ -242,13 +304,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _postsSubscription?.cancel();
     final User? user = _auth.currentUser;
     if (user == null) return;
-    _postsSubscription = _firestore
-        .collection('posts')
-        .where('user_id', isEqualTo: user.uid)
-        .orderBy('timestamp', descending: true)
-        .snapshots()
-        .listen((snapshot) async {
-      if (!hasConnection) return;
+    // Helper to process snapshot docs into local state
+    Future<void> process(QuerySnapshot snapshot) async {
+      // Allow cached data to show even if offline; if online, proceed normally
       List<Map<String, dynamic>> postsList = [];
       for (var doc in snapshot.docs) {
         try {
@@ -268,14 +326,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             }
           }
 
-          DocumentSnapshot likesDoc = await _firestore
-              .collection('posts')
-              .doc(postId)
-              .collection('likes')
-              .doc(_auth.currentUser?.uid)
-              .get();
-
-          String userReaction = likesDoc.exists ? (likesDoc.get('reaction') ?? 'like') : '';
+          // Reaction state for current user
+          try {
+            final likesDoc = await _firestore
+                .collection('posts')
+                .doc(postId)
+                .collection('likes')
+                .doc(_auth.currentUser?.uid)
+                .get();
+            String userReaction = likesDoc.exists ? (likesDoc.get('reaction') ?? 'like') : '';
+            userReactions[postId] = userReaction;
+          } catch (_) {}
 
           postsList.add({
             'id': postId,
@@ -285,18 +346,51 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
           postLikes[postId] = postData['likes_count'] ?? 0;
           postCommentCounts[postId] = postData['comments_count'] ?? 0;
-          userReactions[postId] = userReaction;
         } catch (postError) {
           print('Error processing post ${doc.id}: $postError');
         }
       }
 
+      // If the query below falls back without orderBy, ensure newest first
+      postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
+
       setState(() {
         userPosts = postsList;
       });
-    }, onError: (e) {
-      print('Error in posts listener: $e');
-    });
+    }
+
+    // Primary: ordered stream (needs composite index sometimes)
+    try {
+      _postsSubscription = _firestore
+          .collection('posts')
+          .where('user_id', isEqualTo: user.uid)
+          .orderBy('timestamp', descending: true)
+          .snapshots(includeMetadataChanges: true)
+          .listen((snapshot) async {
+        await process(snapshot);
+      }, onError: (e) async {
+        print('Ordered posts listener error: $e');
+        // Fallback: unordered stream then sort client-side
+        _postsSubscription?.cancel();
+        _postsSubscription = _firestore
+            .collection('posts')
+            .where('user_id', isEqualTo: user.uid)
+            .snapshots(includeMetadataChanges: true)
+            .listen((snapshot) async {
+          await process(snapshot);
+        }, onError: (err) => print('Unordered posts listener error: $err'));
+      });
+    } catch (e) {
+      // If building the query itself throws (e.g., missing index), fallback
+      print('Setting ordered listener threw: $e');
+      _postsSubscription = _firestore
+          .collection('posts')
+          .where('user_id', isEqualTo: user.uid)
+          .snapshots(includeMetadataChanges: true)
+          .listen((snapshot) async {
+        await process(snapshot);
+      }, onError: (err) => print('Unordered posts listener error: $err'));
+    }
   }
 
   Future<void> _fetchComments(String postId) async {
@@ -559,8 +653,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       client.close(force: true);
       return ok;
     } catch (e) {
-      print('URL validation error for $url: $e');
-      return false;
+      // Fallback to GET with Range if HEAD is blocked by CDN
+      try {
+        final uri = Uri.parse(url);
+        final client = HttpClient();
+        client.userAgent = 'MyApp/1.0';
+        final req = await client.getUrl(uri);
+        req.headers.add('Range', 'bytes=0-0');
+        final resp = await req.close();
+        final status = resp.statusCode;
+        final ok = (status >= 200 && status < 300) || status == 206;
+        print('GET(range) $url -> $status');
+        client.close(force: true);
+        return ok;
+      } catch (e2) {
+        print('URL validation error for $url: $e2');
+        return false;
+      }
     }
   }
 
@@ -1042,7 +1151,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           });
                         },
                         icon: const Icon(Icons.photo_library, size: 18),
-                        label: const Text('All Photos'),
+                        label: const Text('All Media'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue,
                           foregroundColor: Colors.white,

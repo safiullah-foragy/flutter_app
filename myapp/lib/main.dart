@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 import 'firebase_options.dart';
 import 'login.dart';
@@ -12,6 +13,9 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Ensure Firestore disk persistence is enabled app-wide for offline cache
+  FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
 
   // Initialize Supabase
   await sb.initializeSupabase();
