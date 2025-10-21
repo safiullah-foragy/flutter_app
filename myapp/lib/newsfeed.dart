@@ -50,6 +50,11 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   // video player controllers are initialized lazily to avoid blocking initial load
   Map<String, VideoPlayerController?> videoPlayerControllers = {};
   Map<String, ChewieController?> videoControllers = {};
+  // Track init state and failures for videos to prevent endless spinners
+  Set<String> videoInitInProgress = {};
+  Map<String, String> videoInitErrors = {};
+  // Cache resolved (possibly signed) video URLs by original URL to avoid repeated signing.
+  static final Map<String, String> _resolvedVideoUrlCache = {};
   Map<String, AnimationController?> likeAnimationControllers = {};
   // Cache of resolved image URLs (may be signed) keyed by postId
   Map<String, String> resolvedImageUrls = {};
@@ -316,7 +321,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         .orderBy('timestamp', descending: true);
 
     // Use includeMetadataChanges so cache-only updates still trigger rebuilds
-    _postsSubscription = baseQuery.snapshots(includeMetadataChanges: true).listen((snapshot) async {
+  _postsSubscription = baseQuery.snapshots(includeMetadataChanges: true).listen((snapshot) async {
       // Do not block on connectivity; let cache drive UI when offline
       List<Map<String, dynamic>> postsList = [];
       for (var doc in snapshot.docs) {
@@ -367,11 +372,45 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       });
     }, onError: (e) {
       print('Error in posts listener: $e');
-      if (e is FirebaseException && e.code == 'permission-denied') {
-        // Handle silently
-      } else {
-        // Avoid toast
-      }
+      // Provide user feedback and fallback to unordered snapshot
+      Fluttertoast.showToast(msg: 'Unable to load feed. Trying fallback...');
+      _postsSubscription?.cancel();
+      _postsSubscription = _firestore
+          .collection('posts')
+          .where('is_private', isEqualTo: false)
+          .snapshots(includeMetadataChanges: true)
+          .listen((snapshot) async {
+        List<Map<String, dynamic>> postsList = [];
+        for (var doc in snapshot.docs) {
+          try {
+            final postData = doc.data() as Map<String, dynamic>?;
+            if (postData == null) continue;
+            String postId = doc.id;
+            String userId = postData['user_id'] ?? '';
+            Map<String, dynamic>? postUserData = userCache[userId];
+            _attachAuthorListener(userId);
+            final String userReaction = userReactions[postId] ?? '';
+            _attachLikeListener(postId);
+            postsList.add({'id': postId, ...postData, 'user_data': postUserData});
+            postLikes[postId] = postData['likes_count'] ?? 0;
+            postCommentCounts[postId] = postData['comments_count'] ?? 0;
+            userReactions[postId] = userReaction;
+          } catch (postError) {
+            print('Error processing post ${doc.id}: $postError');
+          }
+        }
+        postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
+        setState(() {
+          posts = postsList;
+          isLoading = false;
+        });
+      }, onError: (err) {
+        print('Fallback listener also failed: $err');
+        Fluttertoast.showToast(msg: 'Feed failed to load. Check connection or permissions.');
+        setState(() {
+          isLoading = false;
+        });
+      });
     });
   }
 
@@ -819,20 +858,38 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     try {
       // If a controller already exists, don't re-create
       if (videoPlayerControllers[postId] != null || videoControllers[postId] != null) return;
-      // Resolve an accessible URL (public or signed) before initializing.
-      final resolvedUrl = await _resolveVideoUrl(url);
-      if (resolvedUrl == null) {
-        print('Video URL not accessible or returned non-200: $url');
-        videoPlayerControllers[postId] = null;
-        videoControllers[postId] = null;
-        if (mounted) setState(() {});
-        return;
+      if (videoInitInProgress.contains(postId)) return; // avoid duplicate inits
+      videoInitErrors.remove(postId);
+      videoInitInProgress.add(postId);
+      // Prefer a signed Supabase URL up-front for Supabase-hosted videos to avoid 403/redirect latency.
+      String attemptUrl = url;
+      if (url.contains('/storage/v1/object/public/')) {
+        final signedFirst = _resolvedVideoUrlCache[url] ?? await _trySignedSupabaseUrl(url);
+        if (signedFirst != null) {
+          attemptUrl = signedFirst;
+          _resolvedVideoUrlCache[url] = signedFirst;
+        }
       }
-
-      final vpc = VideoPlayerController.networkUrl(Uri.parse(resolvedUrl));
+      VideoPlayerController vpc = VideoPlayerController.networkUrl(Uri.parse(attemptUrl));
       videoPlayerControllers[postId] = vpc;
-      // start initialize and wait
-      await vpc.initialize();
+      try {
+        await vpc.initialize().timeout(const Duration(seconds: 15));
+      } catch (e) {
+        // First attempt failed; try Supabase signed URL fallback if it's a public storage URL
+        final signed = _resolvedVideoUrlCache[url] ?? await _trySignedSupabaseUrl(url);
+        if (signed != null) {
+          try {
+            await vpc.dispose();
+          } catch (_) {}
+          attemptUrl = signed;
+          _resolvedVideoUrlCache[url] = signed;
+          vpc = VideoPlayerController.networkUrl(Uri.parse(attemptUrl));
+          videoPlayerControllers[postId] = vpc;
+          await vpc.initialize().timeout(const Duration(seconds: 15));
+        } else {
+          rethrow;
+        }
+      }
 
       final chewie = ChewieController(
         videoPlayerController: vpc,
@@ -840,6 +897,16 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         autoPlay: false,
         looping: false,
         allowMuting: true,
+        errorBuilder: (context, errorMessage) => Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.red),
+              const SizedBox(height: 8),
+              Text('Video error: ' + errorMessage),
+            ],
+          ),
+        ),
       );
 
       videoControllers[postId] = chewie;
@@ -852,7 +919,29 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       } catch (_) {}
       videoPlayerControllers[postId] = null;
       videoControllers[postId] = null;
+      videoInitErrors[postId] = e.toString();
       if (mounted) setState(() {});
+    } finally {
+      videoInitInProgress.remove(postId);
+    }
+  }
+
+  /// Attempt to create a signed Supabase URL for a public storage object when direct access fails.
+  Future<String?> _trySignedSupabaseUrl(String url) async {
+    try {
+      const marker = '/storage/v1/object/public/';
+      final idx = url.indexOf(marker);
+      if (idx == -1) return null;
+      final tail = url.substring(idx + marker.length); // bucket/path/to/object
+      final parts = tail.split('/');
+      if (parts.length < 2) return null;
+      final bucket = parts[0];
+      final objectPath = parts.sublist(1).join('/');
+      final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
+      final String? signedUrl = signed?.toString();
+      return signedUrl;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -891,40 +980,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     }
   }
 
-  /// If the provided URL is a Supabase storage public URL that returns non-200,
-  /// attempt to create a signed URL and return an accessible URL or null.
-  Future<String?> _resolveVideoUrl(String url) async {
-    // First check the provided URL directly
-    final ok = await _validateUrlExists(url);
-    if (ok) return url;
-
-    try {
-      // Look for the Supabase public storage URL pattern
-      final marker = '/storage/v1/object/public/';
-      final idx = url.indexOf(marker);
-      if (idx == -1) return null;
-
-      final tail = url.substring(idx + marker.length); // bucket/path/to/object
-      final parts = tail.split('/');
-      if (parts.length < 2) return null;
-      final bucket = parts[0];
-      final objectPath = parts.sublist(1).join('/');
-
-      // Try to create a signed URL (1 hour). createSignedUrl typically
-      // returns a String URL in the supabase client.
-      final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
-      final String? signedUrl = signed?.toString();
-      print('createSignedUrl result for $objectPath -> $signedUrl');
-      if (signedUrl == null) return null;
-      final ok2 = await _validateUrlExists(signedUrl);
-      print('HEAD on signed URL -> $ok2');
-      if (ok2) return signedUrl;
-      return null;
-    } catch (e) {
-      print('Error resolving supabase signed url for $url: $e');
-      return null;
-    }
-  }
+  // _resolveVideoUrl deprecated; no longer used.
 
   Future<String?> _resolveImageUrl(String url) async {
     final ok = await _validateUrlExists(url);
@@ -1294,22 +1350,52 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                 child: Builder(builder: (context) {
                   final url = post['video_url'] as String? ?? '';
                   // kick off lazy initialization if not yet created
-                  if ((videoControllers[postId] == null) && (videoPlayerControllers[postId] == null)) {
-                    // initialize in background; don't await here
+                  if (videoControllers[postId] == null && videoPlayerControllers[postId] == null && !videoInitInProgress.contains(postId)) {
                     _initVideoControllers(postId, url);
-                    return const Center(child: CircularProgressIndicator());
                   }
 
                   if (videoControllers[postId] != null) {
-                    return Chewie(controller: videoControllers[postId]!);
+                    // Auto-pause if widget is rebuilt and controller is playing but likely offscreen
+                    final chewie = videoControllers[postId]!;
+                    try {
+                      if (chewie.videoPlayerController.value.isPlaying) {
+                        chewie.videoPlayerController.pause();
+                      }
+                    } catch (_) {}
+                    return Chewie(controller: chewie);
                   }
 
-                  // If player exists but chewie not ready, show loading
-                  if (videoPlayerControllers[postId] != null && !(videoPlayerControllers[postId]!.value.isInitialized)) {
+                  // If initializing, show spinner
+                  if (videoInitInProgress.contains(postId) || (videoPlayerControllers[postId] != null && !(videoPlayerControllers[postId]!.value.isInitialized))) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  return const Center(child: Text('Video unavailable'));
+                  // Failed or unavailable -> show retry UI
+                  final msg = videoInitErrors[postId];
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.red),
+                        const SizedBox(height: 8),
+                        Text(msg == null || msg.isEmpty ? 'Video unavailable' : 'Video error: $msg', textAlign: TextAlign.center),
+                        const SizedBox(height: 8),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            // Reset and retry
+                            videoPlayerControllers[postId]?.dispose();
+                            videoPlayerControllers.remove(postId);
+                            videoControllers[postId]?.dispose();
+                            videoControllers.remove(postId);
+                            videoInitErrors.remove(postId);
+                            _initVideoControllers(postId, url);
+                          },
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  );
                 }),
               ),
             const SizedBox(height: 10),

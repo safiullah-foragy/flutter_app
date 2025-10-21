@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:path/path.dart' as p;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -47,6 +48,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Map<String, Map<String, dynamic>?> userCache = {};
   Map<String, VideoPlayerController?> videoPlayerControllers = {};
   Map<String, ChewieController?> videoControllers = {};
+  // Track init state and failures for videos to prevent endless spinners
+  Set<String> videoInitInProgress = {};
+  Map<String, String> videoInitErrors = {};
+  // Cache resolved (possibly signed) video URLs by original URL to avoid repeated signing.
+  static final Map<String, String> _resolvedVideoUrlCache = {};
   Map<String, AnimationController?> likeAnimationControllers = {};
   StreamSubscription<QuerySnapshot>? _postsSubscription;
   Map<String, StreamSubscription<QuerySnapshot>?> commentSubscriptions = {};
@@ -57,7 +63,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _firestore.settings = const Settings(persistenceEnabled: true);
+    try {
+      _firestore.settings = const Settings(persistenceEnabled: true);
+    } catch (_) {
+      try {
+        _firestore.settings = const Settings(persistenceEnabled: false);
+      } catch (_) {}
+    }
     _checkConnectivity();
     _fetchUserData();
     _setupUserListener();
@@ -606,18 +618,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (url.isEmpty) return;
     try {
       if (videoPlayerControllers[postId] != null || videoControllers[postId] != null) return;
-      final resolvedUrl = await _resolveVideoUrl(url);
-      if (resolvedUrl == null) {
-        print('Video URL not accessible or returned non-200: $url');
-        videoPlayerControllers[postId] = null;
-        videoControllers[postId] = null;
-        if (mounted) setState(() {});
-        return;
+      if (videoInitInProgress.contains(postId)) return; // avoid duplicate inits
+      videoInitErrors.remove(postId);
+      videoInitInProgress.add(postId);
+      // Prefer a signed Supabase URL up-front for Supabase-hosted videos to avoid 403/redirect latency.
+      String attemptUrl = url;
+      if (url.contains('/storage/v1/object/public/')) {
+        final signedFirst = _resolvedVideoUrlCache[url] ?? await _trySignedSupabaseUrl(url);
+        if (signedFirst != null) {
+          attemptUrl = signedFirst;
+          _resolvedVideoUrlCache[url] = signedFirst;
+        }
       }
-
-      final vpc = VideoPlayerController.networkUrl(Uri.parse(resolvedUrl));
+      VideoPlayerController vpc = VideoPlayerController.networkUrl(Uri.parse(attemptUrl));
       videoPlayerControllers[postId] = vpc;
-      await vpc.initialize();
+      try {
+        await vpc.initialize().timeout(const Duration(seconds: 15));
+      } catch (e) {
+        final signed = _resolvedVideoUrlCache[url] ?? await _trySignedSupabaseUrl(url);
+        if (signed != null) {
+          try { await vpc.dispose(); } catch (_) {}
+          attemptUrl = signed;
+          _resolvedVideoUrlCache[url] = signed;
+          vpc = VideoPlayerController.networkUrl(Uri.parse(attemptUrl));
+          videoPlayerControllers[postId] = vpc;
+          await vpc.initialize().timeout(const Duration(seconds: 15));
+        } else {
+          rethrow;
+        }
+      }
 
       final chewie = ChewieController(
         videoPlayerController: vpc,
@@ -625,6 +654,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         autoPlay: false,
         looping: false,
         allowMuting: true,
+        errorBuilder: (context, errorMessage) => Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.red),
+              const SizedBox(height: 8),
+              Text('Video error: ' + errorMessage),
+            ],
+          ),
+        ),
       );
 
       videoControllers[postId] = chewie;
@@ -636,71 +675,36 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       } catch (_) {}
       videoPlayerControllers[postId] = null;
       videoControllers[postId] = null;
+      videoInitErrors[postId] = e.toString();
       if (mounted) setState(() {});
+    } finally {
+      videoInitInProgress.remove(postId);
     }
   }
 
-  Future<bool> _validateUrlExists(String url) async {
+  // Try to create a signed Supabase URL for public storage when direct URL fails.
+  Future<String?> _trySignedSupabaseUrl(String url) async {
     try {
-      final uri = Uri.parse(url);
-      final client = HttpClient();
-      client.userAgent = 'MyApp/1.0';
-      final req = await client.openUrl('HEAD', uri);
-      final resp = await req.close();
-      final status = resp.statusCode;
-      final ok = status >= 200 && status < 300;
-      print('HEAD $url -> $status');
-      client.close(force: true);
-      return ok;
-    } catch (e) {
-      // Fallback to GET with Range if HEAD is blocked by CDN
-      try {
-        final uri = Uri.parse(url);
-        final client = HttpClient();
-        client.userAgent = 'MyApp/1.0';
-        final req = await client.getUrl(uri);
-        req.headers.add('Range', 'bytes=0-0');
-        final resp = await req.close();
-        final status = resp.statusCode;
-        final ok = (status >= 200 && status < 300) || status == 206;
-        print('GET(range) $url -> $status');
-        client.close(force: true);
-        return ok;
-      } catch (e2) {
-        print('URL validation error for $url: $e2');
-        return false;
-      }
-    }
-  }
-
-  Future<String?> _resolveVideoUrl(String url) async {
-    final ok = await _validateUrlExists(url);
-    if (ok) return url;
-
-    try {
-      final marker = '/storage/v1/object/public/';
+      const marker = '/storage/v1/object/public/';
       final idx = url.indexOf(marker);
       if (idx == -1) return null;
-
       final tail = url.substring(idx + marker.length);
       final parts = tail.split('/');
       if (parts.length < 2) return null;
       final bucket = parts[0];
       final objectPath = parts.sublist(1).join('/');
-
       final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
       final String? signedUrl = signed?.toString();
-      print('createSignedUrl result for $objectPath -> $signedUrl');
-      if (signedUrl == null) return null;
-      final ok2 = await _validateUrlExists(signedUrl);
-      print('HEAD on signed URL -> $ok2');
-      if (ok2) return signedUrl;
-      return null;
-    } catch (e) {
-      print('Error resolving supabase signed url for $url: $e');
+      return signedUrl;
+    } catch (_) {
       return null;
     }
   }
+
+  // _validateUrlExists is no longer needed because we rely on player initialization
+  // to determine accessibility and only fallback to a signed URL on failure.
+
+  // _resolveVideoUrl deprecated; no longer used.
 
   Widget _buildReactionButton(String emoji, String reaction, String postId) {
     return GestureDetector(
@@ -751,10 +755,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Future<void> _uploadProfileImage() async {
     try {
-      final status = await Permission.photos.status;
-      if (!status.isGranted) {
-        await _requestPermissions(Permission.photos);
-        if (!await Permission.photos.isGranted) return;
+      // On web, permissions are handled by the browser; on mobile, request if needed
+      if (!kIsWeb) {
+        final status = await Permission.photos.status;
+        if (!status.isGranted) {
+          await _requestPermissions(Permission.photos);
+          if (!await Permission.photos.isGranted) return;
+        }
       }
 
       final XFile? pickedFile = await _imagePicker.pickImage(
@@ -771,9 +778,39 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         
         final User? user = _auth.currentUser;
         if (user != null) {
-          File imageFile = File(pickedFile.path);
-          final String fileName = '${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-          final String downloadUrl = await sb.uploadImage(imageFile, fileName: fileName);
+          // Use bytes-based upload for web compatibility
+          final bytes = await pickedFile.readAsBytes();
+          // Derive an extension/contentType
+          String ext = '';
+          try {
+            ext = p.extension(pickedFile.name.isNotEmpty ? pickedFile.name : pickedFile.path);
+          } catch (_) {
+            ext = '.jpg';
+          }
+          if (ext.isEmpty) ext = '.jpg';
+          String contentType = 'application/octet-stream';
+          switch (ext.toLowerCase()) {
+            case '.jpg':
+            case '.jpeg':
+              contentType = 'image/jpeg';
+              break;
+            case '.png':
+              contentType = 'image/png';
+              break;
+            case '.gif':
+              contentType = 'image/gif';
+              break;
+            case '.webp':
+              contentType = 'image/webp';
+              break;
+          }
+          final String fileName = '${user.uid}_${DateTime.now().millisecondsSinceEpoch}$ext';
+          final String downloadUrl = await sb.uploadImageData(
+            bytes,
+            fileName: fileName,
+            folder: 'profile-images',
+            contentType: contentType,
+          );
           
           await _updateField('profile_image', downloadUrl);
           
@@ -1322,20 +1359,52 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 height: 200,
                 child: Builder(builder: (context) {
                   final url = post['video_url'] as String? ?? '';
-                  if ((videoControllers[postId] == null) && (videoPlayerControllers[postId] == null)) {
+                  // If nothing initialized yet, kick it off once
+                  if (videoControllers[postId] == null && videoPlayerControllers[postId] == null && !videoInitInProgress.contains(postId)) {
                     _initVideoControllers(postId, url);
-                    return const Center(child: CircularProgressIndicator());
                   }
 
                   if (videoControllers[postId] != null) {
-                    return Chewie(controller: videoControllers[postId]!);
+                    final chewie = videoControllers[postId]!;
+                    try {
+                      if (chewie.videoPlayerController.value.isPlaying) {
+                        chewie.videoPlayerController.pause();
+                      }
+                    } catch (_) {}
+                    return Chewie(controller: chewie);
                   }
 
-                  if (videoPlayerControllers[postId] != null && !(videoPlayerControllers[postId]!.value.isInitialized)) {
+                  // Show progress while initializing
+                  if (videoInitInProgress.contains(postId) || (videoPlayerControllers[postId] != null && !(videoPlayerControllers[postId]!.value.isInitialized))) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  return const Center(child: Text('Video unavailable'));
+                  // If we got here, init likely failed or URL invalid. Show retry UI.
+                  final msg = videoInitErrors[postId];
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.red),
+                        const SizedBox(height: 8),
+                        Text(msg == null || msg.isEmpty ? 'Video unavailable' : 'Video error: $msg', textAlign: TextAlign.center),
+                        const SizedBox(height: 8),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            // Reset and retry
+                            videoPlayerControllers[postId]?.dispose();
+                            videoPlayerControllers.remove(postId);
+                            videoControllers[postId]?.dispose();
+                            videoControllers.remove(postId);
+                            videoInitErrors.remove(postId);
+                            _initVideoControllers(postId, url);
+                          },
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  );
                 }),
               ),
             const SizedBox(height: 10),

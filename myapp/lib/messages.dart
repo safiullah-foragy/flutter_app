@@ -1,12 +1,14 @@
-import 'dart:io';
+import 'dart:io' show File; // Used on mobile/desktop only
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'supabase.dart' as sb;
 import 'videos.dart';
+import 'package:url_launcher/url_launcher.dart';
 // import 'newsfeed.dart'; // No direct usage here
 import 'see_profile_from_newsfeed.dart';
 
@@ -22,8 +24,7 @@ class _MessagesPageState extends State<MessagesPage> {
   final firebase_auth.FirebaseAuth _auth = firebase_auth.FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   Map<String, dynamic>? currentUserData;
-  // Track bubbles dismissed by the user so they don't reappear immediately
-  final Set<String> _dismissedBubbleIds = <String>{};
+  // Global overlay handles bubble behavior.
 
   @override
   void initState() {
@@ -106,24 +107,7 @@ class _MessagesPageState extends State<MessagesPage> {
 
           if (convs.isEmpty) return const Center(child: Text('No conversations'));
 
-          // Determine the top-most unread conversation for bubble overlay (if any)
-          QueryDocumentSnapshot? topUnreadDoc;
-          Map<String, dynamic>? topUnreadData;
-          String? topUnreadOtherId;
-          for (final item in convs) {
-            if (item['unread'] == true) {
-              final d = item['doc'] as QueryDocumentSnapshot;
-              if (_dismissedBubbleIds.contains(d.id)) continue;
-              final data = item['data'] as Map<String, dynamic>;
-              final participants = List<String>.from(data['participants'] ?? <String>[]);
-              final otherId = participants.firstWhere((p) => p != uid, orElse: () => '');
-              if (otherId.isEmpty) continue;
-              topUnreadDoc = d;
-              topUnreadData = data;
-              topUnreadOtherId = otherId;
-              break; // pick the first unread (already sorted by latest)
-            }
-          }
+          // Global overlay handles unread bubble; no per-page top unread detection needed here.
 
           final Widget listView = ListView.builder(
             itemCount: convs.length,
@@ -248,43 +232,7 @@ class _MessagesPageState extends State<MessagesPage> {
             },
           );
 
-          // If there's a top unread conversation and it's not dismissed, show a bubble overlay
-          if (topUnreadDoc != null && topUnreadData != null && topUnreadOtherId != null) {
-            // Capture non-null locals for use in closures
-            final String _docId = topUnreadDoc.id;
-            final String _otherId = topUnreadOtherId;
-            final String _lastMsg = (topUnreadData['last_message'] ?? '') as String;
-            return Stack(
-              children: [
-                listView,
-                Positioned(
-                  right: 16,
-                  bottom: 24,
-                  child: _NewMessageBubble(
-                    otherUserId: _otherId,
-                    lastMessage: _lastMsg,
-                    onOpen: () async {
-                      await _markConversationRead(_docId, uid);
-                      if (mounted) {
-                        Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => ChatPage(
-                            conversationId: _docId,
-                            otherUserId: _otherId,
-                          ),
-                        ));
-                      }
-                    },
-                    onDismiss: () {
-                      setState(() {
-                        _dismissedBubbleIds.add(_docId);
-                      });
-                    },
-                  ),
-                ),
-              ],
-            );
-          }
-
+          // Page-scoped bubble overlay removed (we show a global overlay instead).
           return listView;
         },
       ),
@@ -657,13 +605,25 @@ class _ChatPageState extends State<ChatPage> {
         imageQuality: 80
       );
       if (picked == null) return;
-      
-      final File file = File(picked.path);
       setState(() => _sending = true);
-      
+
       String url = '';
       try {
-        url = await sb.uploadMessageImage(file);
+        if (kIsWeb) {
+          final bytes = await picked.readAsBytes();
+          // Infer content type from file name
+          final name = picked.name;
+          String? ct;
+          final lower = name.toLowerCase();
+          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) ct = 'image/jpeg';
+          else if (lower.endsWith('.png')) ct = 'image/png';
+          else if (lower.endsWith('.gif')) ct = 'image/gif';
+          else if (lower.endsWith('.webp')) ct = 'image/webp';
+          url = await sb.uploadMessageImageBytes(bytes, fileName: name, contentType: ct);
+        } else {
+          final File file = File(picked.path);
+          url = await sb.uploadMessageImage(file);
+        }
       } catch (e) {
         debugPrint('Image upload error: $e');
         ScaffoldMessenger.of(context).showSnackBar(
@@ -684,13 +644,24 @@ class _ChatPageState extends State<ChatPage> {
     try {
       final XFile? picked = await _picker.pickVideo(source: ImageSource.gallery);
       if (picked == null) return;
-      
-      final File file = File(picked.path);
       setState(() => _sending = true);
-      
+
       String url = '';
       try {
-        url = await sb.uploadMessageVideo(file);
+        if (kIsWeb) {
+          final bytes = await picked.readAsBytes();
+          final name = picked.name;
+          String? ct;
+          final lower = name.toLowerCase();
+          if (lower.endsWith('.mp4')) ct = 'video/mp4';
+          else if (lower.endsWith('.mov')) ct = 'video/quicktime';
+          else if (lower.endsWith('.mkv')) ct = 'video/x-matroska';
+          else if (lower.endsWith('.webm')) ct = 'video/webm';
+          url = await sb.uploadMessageVideoBytes(bytes, fileName: name, contentType: ct);
+        } else {
+          final File file = File(picked.path);
+          url = await sb.uploadMessageVideo(file);
+        }
       } catch (e) {
         debugPrint('Video upload error: $e');
         ScaffoldMessenger.of(context).showSnackBar(
@@ -779,6 +750,23 @@ class _ChatPageState extends State<ChatPage> {
             );
           },
         ),
+        actions: [
+          IconButton(
+            tooltip: 'All media',
+            icon: const Icon(Icons.perm_media_outlined),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ConversationMediaPage(
+                    conversationId: widget.conversationId,
+                    otherUserId: widget.otherUserId,
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -868,16 +856,28 @@ class _ChatPageState extends State<ChatPage> {
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
                                             if (fileUrl.isNotEmpty && fileType == 'image')
-                                              Padding(
-                                                padding: const EdgeInsets.only(bottom: 8.0),
-                                                child: ClipRRect(
-                                                  borderRadius: BorderRadius.circular(8),
-                                                  child: CachedNetworkImage(
-                                                    imageUrl: fileUrl,
-                                                    width: 200,
-                                                    fit: BoxFit.cover,
-                                                    errorWidget: (context, url, error) => 
-                                                      const Icon(Icons.error),
+                                              GestureDetector(
+                                                onTap: () {
+                                                  Navigator.push(
+                                                    context,
+                                                    MaterialPageRoute(
+                                                      builder: (_) => ImageViewerPage(
+                                                        imageUrl: fileUrl,
+                                                        conversationId: widget.conversationId,
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
+                                                child: Padding(
+                                                  padding: const EdgeInsets.only(bottom: 8.0),
+                                                  child: ClipRRect(
+                                                    borderRadius: BorderRadius.circular(8),
+                                                    child: CachedNetworkImage(
+                                                      imageUrl: fileUrl,
+                                                      width: 200,
+                                                      fit: BoxFit.cover,
+                                                      errorWidget: (context, url, error) => const Icon(Icons.error),
+                                                    ),
                                                   ),
                                                 ),
                                               ),
@@ -1219,101 +1219,164 @@ class _ChatPageState extends State<ChatPage> {
   }
 }
 
-/// A small floating bubble that previews a new/unread message and opens the chat when tapped.
-class _NewMessageBubble extends StatelessWidget {
-  final String otherUserId;
-  final String lastMessage;
-  final VoidCallback onOpen;
-  final VoidCallback onDismiss;
+// Per-page new message bubble removed; use GlobalNewMessageBubble instead.
 
-  const _NewMessageBubble({
-    required this.otherUserId,
-    required this.lastMessage,
-    required this.onOpen,
-    required this.onDismiss,
-  });
+/// Full-screen image viewer with pinch-zoom and download + media button.
+class ImageViewerPage extends StatelessWidget {
+  final String imageUrl;
+  final String? conversationId;
+  const ImageViewerPage({super.key, required this.imageUrl, this.conversationId});
+
+  Future<void> _download(BuildContext context) async {
+    final uri = Uri.parse(imageUrl);
+    if (!await canLaunchUrl(uri)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cannot open downloader')));
+      return;
+    }
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final FirebaseFirestore firestore = FirebaseFirestore.instance;
-    return Material(
-      color: Colors.transparent,
-      child: GestureDetector(
-        onTap: onOpen,
-        child: Dismissible(
-          key: ValueKey('bubble_$otherUserId'),
-          direction: DismissDirection.down,
-          onDismissed: (_) => onDismiss(),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 280),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: const [
-                BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 4)),
-              ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Image'),
+        actions: [
+          IconButton(
+            tooltip: 'Download',
+            icon: const Icon(Icons.download),
+            onPressed: () => _download(context),
+          ),
+          if (conversationId != null)
+            IconButton(
+              tooltip: 'All media',
+              icon: const Icon(Icons.perm_media_outlined),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ConversationMediaPage(
+                      conversationId: conversationId!,
+                      otherUserId: '',
+                    ),
+                  ),
+                );
+              },
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                  future: firestore.collection('users').doc(otherUserId).get(),
-                  builder: (context, snap) {
-                    String name = otherUserId;
-                    String? avatarUrl;
-                    if (snap.hasData && snap.data != null && snap.data!.exists) {
-                      final u = snap.data!.data();
-                      name = (u?['name'] as String?)?.trim().isNotEmpty == true ? u!['name'] as String : otherUserId;
-                      avatarUrl = u?['profile_image'] as String?;
-                    }
-                    return Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        (avatarUrl != null && avatarUrl.isNotEmpty)
-                            ? CircleAvatar(backgroundImage: CachedNetworkImageProvider(avatarUrl))
-                            : CircleAvatar(
-                                backgroundColor: Colors.blue,
-                                child: Text(
-                                  name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                        const SizedBox(width: 10),
-                        Flexible(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                name,
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                                style: const TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                lastMessage.isNotEmpty ? lastMessage : 'New message',
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                                style: const TextStyle(color: Colors.black54),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        InkWell(
-                          onTap: onDismiss,
-                          child: const Icon(Icons.close, size: 18, color: Colors.black45),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ],
-            ),
+        ],
+      ),
+      backgroundColor: Colors.black,
+      body: Center(
+        child: InteractiveViewer(
+          panEnabled: true,
+          minScale: 0.5,
+          maxScale: 4,
+          child: CachedNetworkImage(
+            imageUrl: imageUrl,
+            fit: BoxFit.contain,
+            errorWidget: (c, u, e) => const Icon(Icons.error, color: Colors.white),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Shows all images and videos in a conversation, newest first.
+class ConversationMediaPage extends StatelessWidget {
+  final String conversationId;
+  final String otherUserId; // optional name lookup not strictly needed here
+  const ConversationMediaPage({super.key, required this.conversationId, required this.otherUserId});
+
+  @override
+  Widget build(BuildContext context) {
+    final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Conversation media')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _firestore
+            .collection('conversations')
+            .doc(conversationId)
+            .collection('messages')
+            .orderBy('timestamp', descending: true)
+            .snapshots(),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return Center(child: Text('Error: ${snap.error}'));
+          }
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final docs = snap.data!.docs;
+          final items = docs.map((d) => d.data() as Map<String, dynamic>? ?? {}).where((m) {
+            final url = (m['file_url'] ?? '') as String;
+            final t = (m['file_type'] ?? '') as String;
+            return url.isNotEmpty && (t == 'image' || t == 'video');
+          }).toList();
+
+          if (items.isEmpty) {
+            return const Center(child: Text('No media yet'));
+          }
+
+          return GridView.builder(
+            padding: const EdgeInsets.all(8),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+            ),
+            itemCount: items.length,
+            itemBuilder: (context, i) {
+              final m = items[i];
+              final url = (m['file_url'] ?? '') as String;
+              final t = (m['file_type'] ?? '') as String;
+              if (t == 'image') {
+                return GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ImageViewerPage(imageUrl: url, conversationId: conversationId),
+                      ),
+                    );
+                  },
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+                  ),
+                );
+              } else {
+                // video tile
+                return GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => VideoPlayerScreen(
+                          videos: [
+                            {'video_url': url, 'text': 'Video'}
+                          ],
+                          startIndex: 0,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(color: Colors.black12),
+                      ),
+                      const Center(child: Icon(Icons.play_circle_fill, size: 36, color: Colors.white)),
+                    ],
+                  ),
+                );
+              }
+            },
+          );
+        },
       ),
     );
   }
