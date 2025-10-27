@@ -7,11 +7,13 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'firebase_options.dart';
 import 'login.dart';
-import 'homepage.dart';
+// import 'homepage.dart'; // now hosted inside HomeAndFeedPage
+import 'home_and_feed.dart';
 import 'supabase.dart' as sb;
 import 'messages.dart';
 import 'fcm_web.dart';
 import 'new_message_overlay.dart';
+import 'theme_controller.dart';
 
 import 'dart:async';
 import 'package:flutter/services.dart';
@@ -67,7 +69,10 @@ void main() {
       await _setupPushNotifications();
     }
 
-    // Start the app UI ASAP
+  // Load persisted theme before starting UI
+  await ThemeController.instance.init();
+
+  // Start the app UI ASAP
     // ignore: avoid_print
     print('main: calling runApp');
     runApp(const MyApp());
@@ -138,6 +143,11 @@ Future<void> _setupPushNotifications() async {
     final n = message.notification;
     final data = message.data;
     if (n != null) {
+      final convId = data['conversationId'] ?? '';
+      final otherId = data['otherUserId'] ?? '';
+      final payload = convId.isNotEmpty || otherId.isNotEmpty
+          ? 'convId=' + convId + '&otherId=' + otherId
+          : '';
       await _flnp.show(
         n.hashCode,
         n.title ?? 'New message',
@@ -145,7 +155,7 @@ Future<void> _setupPushNotifications() async {
         const NotificationDetails(
           android: AndroidNotificationDetails('messages', 'Messages', importance: Importance.high, priority: Priority.high),
         ),
-        payload: data['conversationId'] ?? '',
+        payload: payload,
       );
     }
   });
@@ -172,17 +182,57 @@ Future<void> _setupPushNotifications() async {
 }
 
 void _onNotificationTap(String payload) {
-  _navigateToConversation(payload, '');
+  if (payload.isEmpty) return;
+  // Parse 'convId=...&otherId=...'
+  try {
+    final m = Uri.splitQueryString(payload);
+    final convId = m['convId'] ?? '';
+    final otherId = m['otherId'] ?? '';
+    if (convId.isNotEmpty) {
+      _navigateToConversation(convId, otherId);
+    }
+  } catch (_) {
+    // Fallback: treat payload as conversationId only
+    _navigateToConversation(payload, '');
+  }
 }
 
 void _navigateToConversation(String conversationId, String otherUserId) {
   final ctx = _MyAppNavigator.navigatorKey.currentContext;
-  if (ctx != null) {
-    Navigator.of(ctx).push(
-      MaterialPageRoute(
-        builder: (_) => ChatPage(conversationId: conversationId, otherUserId: otherUserId),
-      ),
-    );
+  if (ctx == null) return;
+  Future<void> doNav(String resolvedOther) async {
+    Navigator.of(ctx).push(MaterialPageRoute(
+      builder: (_) => ChatPage(conversationId: conversationId, otherUserId: resolvedOther),
+    ));
+  }
+
+  // Ensure user is signed-in before navigating (especially on cold-start from notif)
+  final user = firebase_auth.FirebaseAuth.instance.currentUser;
+  if (user == null) {
+    firebase_auth.FirebaseAuth.instance.authStateChanges().firstWhere((u) => u != null).then((_) {
+      _navigateToConversation(conversationId, otherUserId);
+    });
+    return;
+  }
+
+  if (otherUserId.isEmpty) {
+    // Try to resolve other user id from Firestore before navigating
+    FirebaseFirestore.instance.collection('conversations').doc(conversationId).get().then((doc) {
+      final me = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+      String resolved = otherUserId;
+      if (doc.exists) {
+        final data = doc.data();
+        final parts = List<String>.from(data?['participants'] ?? <String>[]);
+        if (me != null) {
+          resolved = parts.firstWhere((p) => p != me, orElse: () => otherUserId);
+        }
+      }
+      doNav(resolved.isNotEmpty ? resolved : otherUserId);
+    }).catchError((_) {
+      doNav(otherUserId);
+    });
+  } else {
+    doNav(otherUserId);
   }
 }
 
@@ -193,21 +243,34 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     // ignore: avoid_print
     print('MyApp.build');
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'MyApp',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      navigatorKey: _MyAppNavigator.navigatorKey,
-      builder: (context, child) {
-        // Place a global unread message bubble overlay on top of all routes
-        return Stack(
-          children: [
-            if (child != null) child,
-            const GlobalNewMessageBubble(),
-          ],
+    return AnimatedBuilder(
+      animation: ThemeController.instance,
+      builder: (context, _) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'MyApp',
+          themeMode: ThemeController.instance.mode,
+          theme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(seedColor: ThemeController.instance.seedColor, brightness: Brightness.light),
+            useMaterial3: true,
+          ),
+          darkTheme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(seedColor: ThemeController.instance.seedColor, brightness: Brightness.dark),
+            useMaterial3: true,
+          ),
+          navigatorKey: _MyAppNavigator.navigatorKey,
+          builder: (context, child) {
+            // Place a global unread message bubble overlay on top of all routes
+            return Stack(
+              children: [
+                if (child != null) child,
+                const GlobalNewMessageBubble(),
+              ],
+            );
+          },
+          home: const MessagingInitializer(child: AuthGate()),
         );
       },
-  home: const MessagingInitializer(child: AuthGate()),
     );
   }
 }
@@ -301,7 +364,7 @@ class AuthGate extends StatelessWidget {
               }
             }
           }
-          return const HomePage();
+          return const HomeAndFeedPage();
         }
         // ignore: avoid_print
         print('AuthGate: no user, showing LoginPage');

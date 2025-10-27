@@ -16,6 +16,8 @@ import 'see_profile_from_newsfeed.dart';
 import 'videos.dart';
 import 'messages.dart';
 import 'jobs.dart';
+import 'app_cache_manager.dart';
+import 'notifications.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -43,6 +45,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   Map<String, int> postLikes = {};
   Map<String, int> postCommentCounts = {};
   Map<String, String> userReactions = {};
+  // Per-reaction counts cache per postId: {'love':x,'like':y,'sad':z,'angry':w}
+  Map<String, Map<String, int>> reactionCounts = {};
   Map<String, bool> commentEditing = {};
   Map<String, TextEditingController> commentEditControllers = {};
   Map<String, bool> expandedComments = {};
@@ -245,6 +249,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         try {
           final postData = doc.data() as Map<String, dynamic>?;
           if (postData == null) continue;
+          // Exclude job posts from general newsfeed
+          if ((postData['post_type'] ?? '') == 'job') continue;
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
@@ -328,6 +334,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         try {
           final postData = doc.data() as Map<String, dynamic>?;
           if (postData == null) continue;
+          // Exclude job posts from general newsfeed
+          if ((postData['post_type'] ?? '') == 'job') continue;
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
@@ -372,8 +380,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       });
     }, onError: (e) {
       print('Error in posts listener: $e');
-      // Provide user feedback and fallback to unordered snapshot
-      Fluttertoast.showToast(msg: 'Unable to load feed. Trying fallback...');
+      // Silently fallback to unordered snapshot
       _postsSubscription?.cancel();
       _postsSubscription = _firestore
           .collection('posts')
@@ -385,6 +392,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           try {
             final postData = doc.data() as Map<String, dynamic>?;
             if (postData == null) continue;
+            // Exclude job posts from general newsfeed
+            if ((postData['post_type'] ?? '') == 'job') continue;
             String postId = doc.id;
             String userId = postData['user_id'] ?? '';
             Map<String, dynamic>? postUserData = userCache[userId];
@@ -406,7 +415,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         });
       }, onError: (err) {
         print('Fallback listener also failed: $err');
-        Fluttertoast.showToast(msg: 'Feed failed to load. Check connection or permissions.');
         setState(() {
           isLoading = false;
         });
@@ -714,6 +722,27 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         'comments_count': FieldValue.increment(1),
       });
 
+      // Create a notification for the post owner (client-side) with a 30-day TTL
+      try {
+        final postSnap = await _firestore.collection('posts').doc(postId).get();
+  final postData = postSnap.data();
+  final String? to = (postData?['user_id']) as String?;
+        if (to != null && to.isNotEmpty && to != user.uid) {
+          await _firestore.collection('notifications').add({
+            'to': to,
+            'type': 'comment',
+            'from': user.uid,
+            'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+            'postId': postId,
+            'timestamp': timestamp,
+            'read': false,
+            'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+          });
+        }
+      } catch (_) {
+        // best-effort; ignore failures to avoid blocking UI
+      }
+
       setState(() {
         postComments[postId] = postComments[postId] ?? [];
         postComments[postId]!.add({
@@ -802,47 +831,80 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     try {
       final firebase_auth.User? user = _auth.currentUser;
       if (user == null) return;
+      final postRef = _firestore.collection('posts').doc(postId);
+      final likeRef = postRef.collection('likes').doc(user.uid);
 
-      final docRef = _firestore
-          .collection('posts')
-          .doc(postId)
-          .collection('likes')
-          .doc(user.uid);
+  String result = 'none';
+      String newReaction = reaction;
+      await _firestore.runTransaction((tx) async {
+        final likeSnap = await tx.get(likeRef);
+        final postSnap = await tx.get(postRef);
+        if (!postSnap.exists) return; // post deleted
 
-      final likeDoc = await docRef.get();
-      final bool wasLiked = likeDoc.exists;
-      final String oldReaction = wasLiked ? (likeDoc.get('reaction') ?? 'like') : '';
-
-      if (wasLiked && oldReaction == reaction) {
-        // Unlike
-        await docRef.delete();
-        setState(() {
-          userReactions[postId] = '';
-          postLikes[postId] = (postLikes[postId] ?? 1) - 1;
-        });
-        await _firestore.collection('posts').doc(postId).update({
-          'likes_count': FieldValue.increment(-1),
-        });
-      } else {
-        // Like or change reaction
-        await docRef.set({
-          'user_id': user.uid,
-          'reaction': reaction,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        });
-        setState(() {
-          userReactions[postId] = reaction;
-          if (!wasLiked) {
-            postLikes[postId] = (postLikes[postId] ?? 0) + 1;
+        if (likeSnap.exists) {
+          final prev = likeSnap.data();
+          final String prevReaction = (prev?['reaction'] ?? '') as String;
+          if (prevReaction == reaction) {
+            // Unlike: delete like doc and decrement likes_count
+            tx.delete(likeRef);
+            tx.update(postRef, {'likes_count': FieldValue.increment(-1)});
+            result = 'unlike';
+          } else {
+            // Change reaction only
+            tx.update(likeRef, {
+              'reaction': reaction,
+              'timestamp': DateTime.now().millisecondsSinceEpoch,
+            });
+            result = 'reactionChange';
           }
-          likeAnimationControllers[postId]?.forward(from: 0);
-        });
-        if (!wasLiked) {
-          await _firestore.collection('posts').doc(postId).update({
-            'likes_count': FieldValue.increment(1),
+        } else {
+          // First-like: create like doc, increment likes_count, and create notification
+          tx.set(likeRef, {
+            'reaction': reaction,
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
           });
+          tx.update(postRef, {'likes_count': FieldValue.increment(1)});
+          result = 'firstLike';
+
+          // Create notification inside the transaction (best-effort with a pre-made doc ref)
+          final postData = postSnap.data();
+          final String? to = postData?['user_id'] as String?;
+          if (to != null && to.isNotEmpty && to != user.uid) {
+            final notifRef = _firestore.collection('notifications').doc();
+            tx.set(notifRef, {
+              'to': to,
+              'type': 'like',
+              'from': user.uid,
+              'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+              'postId': postId,
+              'timestamp': DateTime.now().millisecondsSinceEpoch,
+              'read': false,
+              'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+            });
+          }
         }
-      }
+      });
+
+      // Reflect UI state based on result
+      if (!mounted) return;
+      setState(() {
+        switch (result) {
+          case 'unlike':
+            userReactions[postId] = '';
+            postLikes[postId] = (postLikes[postId] ?? 1) - 1;
+            break;
+          case 'firstLike':
+            userReactions[postId] = newReaction;
+            postLikes[postId] = (postLikes[postId] ?? 0) + 1;
+            likeAnimationControllers[postId]?.forward(from: 0);
+            break;
+          case 'reactionChange':
+            userReactions[postId] = newReaction;
+            break;
+          case 'none':
+            break;
+        }
+      });
     } catch (e) {
       print('Error toggling like: $e');
       if (e is FirebaseException && e.code == 'permission-denied') {
@@ -945,63 +1007,27 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     }
   }
 
-  /// Check if URL responds with 200 on a HEAD request. Returns false on error
-  /// or non-200 responses. This helps avoid initializing ExoPlayer on bad URLs.
-  Future<bool> _validateUrlExists(String url) async {
-    try {
-      final uri = Uri.parse(url);
-      final client = HttpClient();
-      client.userAgent = 'MyApp/1.0';
-      final req = await client.openUrl('HEAD', uri);
-      final resp = await req.close();
-      final status = resp.statusCode;
-      final ok = status >= 200 && status < 300;
-      print('HEAD $url -> $status');
-      client.close(force: true);
-      return ok;
-    } catch (e) {
-      // Fallback to GET with Range if HEAD is blocked
-      try {
-        final uri = Uri.parse(url);
-        final client = HttpClient();
-        client.userAgent = 'MyApp/1.0';
-        final req = await client.getUrl(uri);
-        req.headers.add('Range', 'bytes=0-0');
-        final resp = await req.close();
-        final status = resp.statusCode;
-        final ok = (status >= 200 && status < 300) || status == 206;
-        print('GET(range) $url -> $status');
-        client.close(force: true);
-        return ok;
-      } catch (e2) {
-        print('URL validation error for $url: $e2');
-        return false;
-      }
-    }
-  }
-
   // _resolveVideoUrl deprecated; no longer used.
 
   Future<String?> _resolveImageUrl(String url) async {
-    final ok = await _validateUrlExists(url);
-    if (ok) return url;
-    try {
-      final marker = '/storage/v1/object/public/';
-      final idx = url.indexOf(marker);
-      if (idx == -1) return null;
-      final tail = url.substring(idx + marker.length);
-      final parts = tail.split('/');
-      if (parts.length < 2) return null;
-      final bucket = parts[0];
-      final objectPath = parts.sublist(1).join('/');
-      final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
-      final String? signedUrl = signed?.toString();
-      if (signedUrl == null) return null;
-      if (await _validateUrlExists(signedUrl)) return signedUrl;
-      return null;
-    } catch (_) {
-      return null;
+    // Fast path: if it's a Supabase public storage URL, pre-sign directly to avoid HEAD checks
+    const marker = '/storage/v1/object/public/';
+    final idx = url.indexOf(marker);
+    if (idx != -1) {
+      try {
+        final tail = url.substring(idx + marker.length);
+        final parts = tail.split('/');
+        if (parts.length >= 2) {
+          final bucket = parts[0];
+          final objectPath = parts.sublist(1).join('/');
+          final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
+          final String? signedUrl = signed?.toString();
+          if (signedUrl != null && signedUrl.isNotEmpty) return signedUrl;
+        }
+      } catch (_) {}
     }
+    // Otherwise, just use the original URL
+    return url;
   }
 
   Widget _buildReactionButton(String emoji, String reaction, String postId) {
@@ -1032,6 +1058,96 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     }
   }
 
+  // Note: reactionCounts are computed on demand when the sheet opens.
+
+  void _showReactionsSheet(String postId) async {
+    // Load all likes for this post and group by reaction
+    try {
+      final likesSnap = await _firestore.collection('posts').doc(postId).collection('likes').get();
+      final Map<String, List<String>> byReaction = {
+        'love': [],
+        'like': [],
+        'sad': [],
+        'angry': [],
+      };
+      for (final d in likesSnap.docs) {
+        final r = (d.data()['reaction'] ?? 'like') as String;
+        final uid = d.id; // liker uid
+        if (byReaction.containsKey(r)) byReaction[r]!.add(uid);
+      }
+      // Update cached counts for inline UI
+      final Map<String, int> counts = {
+        for (final e in byReaction.entries) e.key: e.value.length,
+      };
+      setState(() => reactionCounts[postId] = counts);
+
+      if (!mounted) return;
+      // Build user lists for display (best-effort names)
+      final Map<String, Map<String, dynamic>> userCacheLocal = {};
+      Future<Map<String, dynamic>> loadUser(String uid) async {
+        if (userCache.containsKey(uid) && userCache[uid] != null) return userCache[uid]!;
+        if (userCacheLocal.containsKey(uid)) return userCacheLocal[uid]!;
+        try {
+          final u = await _firestore.collection('users').doc(uid).get();
+          final data = u.data() ?? <String, dynamic>{};
+          userCacheLocal[uid] = data;
+          return data;
+        } catch (_) {
+          return {};
+        }
+      }
+
+      // Show sheet
+      // Use StatefulBuilder to allow switching filters if desired later
+      // For now, show sections per reaction that has entries
+      // Each section displays the users list
+      // ignore: use_build_context_synchronously
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (c) {
+          final sections = ['love', 'like', 'sad', 'angry']
+              .where((r) => (byReaction[r]?.isNotEmpty ?? false))
+              .toList();
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: sections.isEmpty
+                  ? const Center(child: Text('No reactions yet'))
+                  : ListView.builder(
+                      itemCount: sections.length,
+                      itemBuilder: (ctx, idx) {
+                        final r = sections[idx];
+                        final users = byReaction[r]!;
+                        return FutureBuilder<List<Map<String, dynamic>>>(
+                          future: Future.wait(users.map(loadUser)),
+                          builder: (ctx2, snap) {
+                            final list = snap.data ?? const [];
+                            return ExpansionTile(
+                              leading: Text(_getReactionEmoji(r), style: const TextStyle(fontSize: 18)),
+                              title: Text('${r[0].toUpperCase()}${r.substring(1)} (${users.length})'),
+                              children: [
+                                for (int i = 0; i < users.length; i++)
+                                  ListTile(
+                                    leading: const CircleAvatar(child: Icon(Icons.person)),
+                                    title: Text((list.length > i ? (list[i]['name'] ?? list[i]['displayName'] ?? 'Unknown') : 'Unknown').toString()),
+                                    subtitle: Text(users[i]),
+                                  ),
+                              ],
+                            );
+                          },
+                        );
+                      },
+                    ),
+            ),
+          );
+        },
+      );
+    } catch (_) {
+      // ignore errors
+    }
+  }
+
   void _showReactionOptions(String postId) {
     showModalBottomSheet(
       context: context,
@@ -1054,6 +1170,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     );
   }
 
+  // Notifications are created server-side via Cloud Functions
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -1064,6 +1182,47 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           foregroundColor: Colors.white,
           toolbarHeight: 48,
           actions: [
+            // Notifications icon with unread badge
+            StreamBuilder<QuerySnapshot>(
+              stream: (_auth.currentUser == null)
+                  ? const Stream.empty()
+                  : _firestore
+                      .collection('notifications')
+                      .where('to', isEqualTo: _auth.currentUser!.uid)
+                      .where('read', isEqualTo: false)
+                      .snapshots(),
+              builder: (context, snap) {
+                final int unread = (snap.hasData) ? snap.data!.docs.length : 0;
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    IconButton(
+                      tooltip: 'Notifications',
+                      icon: const Icon(Icons.notifications_outlined),
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsPage())),
+                    ),
+                    if (unread > 0)
+                      Positioned(
+                        right: 8,
+                        top: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Text(
+                            unread > 99 ? '99+' : '$unread',
+                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
             IconButton(
               tooltip: 'Toggle composer',
               icon: Icon(_showComposer ? Icons.expand_less : Icons.expand_more),
@@ -1337,6 +1496,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             if (post['image_url']?.isNotEmpty ?? false)
               CachedNetworkImage(
                 imageUrl: resolvedImageUrls[postId] ?? post['image_url'],
+                cacheManager: AppCacheManager.instance,
                 placeholder: (context, url) => const SizedBox(
                   height: 200,
                   child: Center(child: CircularProgressIndicator()),
@@ -1399,7 +1559,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                 }),
               ),
             const SizedBox(height: 10),
-            Row(
+            GestureDetector(
+              onTap: () => _showReactionsSheet(postId),
+              child: Row(
               children: [
                 if (likesCount > 0)
                   Row(
@@ -1410,8 +1572,22 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                     ],
                   ),
                 if (commentsCount > 0) Text('$commentsCount comments'),
+                const Spacer(),
+                // Show reaction variety if we have cached counts
+                if (reactionCounts[postId] != null)
+                  Row(
+                    children: [
+                      for (final r in ['love','like','sad','angry'])
+                        if ((reactionCounts[postId]![r] ?? 0) > 0) ...[
+                          Text(_getReactionEmoji(r)),
+                          const SizedBox(width: 2),
+                          Text('${reactionCounts[postId]![r]}'),
+                          const SizedBox(width: 8),
+                        ],
+                    ],
+                  ),
               ],
-            ),
+            )),
             const Divider(),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,

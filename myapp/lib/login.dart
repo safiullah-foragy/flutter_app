@@ -1,193 +1,52 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
-import 'signup.dart';
+
 import 'forgot.dart';
-import 'homepage.dart';
+import 'signup.dart';
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({Key? key}) : super(key: key);
 
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixin {
+class _LoginPageState extends State<LoginPage> {
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  
-  late AnimationController _controller;
-  late Animation<Color?> _colorAnimation;
-  
+
+  bool _obscurePassword = true;
   bool _isLoading = false;
-  bool _isEmailValid = true;
-  bool _isPasswordValid = true;
-  bool _obscurePassword = true; // Added to toggle password visibility
-
-  @override
-  void initState() {
-    super.initState();
-    
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 10),
-    )..repeat(reverse: true);
-    
-    _colorAnimation = TweenSequence<Color?>([
-      TweenSequenceItem(
-        tween: ColorTween(
-          begin: const Color(0xFF0A0E21),
-          end: const Color(0xFF1A1F38),
-        ),
-        weight: 25.0,
-      ),
-      TweenSequenceItem(
-        tween: ColorTween(
-          begin: const Color(0xFF1A1F38),
-          end: const Color(0xFF2A1B3D),
-        ),
-        weight: 25.0,
-      ),
-      TweenSequenceItem(
-        tween: ColorTween(
-          begin: const Color(0xFF2A1B3D),
-          end: const Color(0xFF0F2A44),
-        ),
-        weight: 25.0,
-      ),
-      TweenSequenceItem(
-        tween: ColorTween(
-          begin: const Color(0xFF0F2A44),
-          end: const Color(0xFF0A0E21),
-        ),
-        weight: 25.0,
-      ),
-    ]).animate(_controller)
-      ..addListener(() {
-        setState(() {});
-      });
-    
-    emailController.addListener(_validateEmail);
-    passwordController.addListener(_validatePassword);
-  }
-
-  void _validateEmail() {
-    setState(() {
-      _isEmailValid = emailController.text.contains('@');
-    });
-  }
-
-  void _validatePassword() {
-    setState(() {
-      _isPasswordValid = passwordController.text.length >= 6;
-    });
-  }
 
   @override
   void dispose() {
-    emailController.removeListener(_validateEmail);
-    passwordController.removeListener(_validatePassword);
     emailController.dispose();
     passwordController.dispose();
-    _controller.dispose();
     super.dispose();
   }
 
-  void login() async {
-    String email = emailController.text.trim();
-    String password = passwordController.text.trim();
-    
-    if (email.isEmpty || password.isEmpty) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Error'),
-          content: const Text('Please enter email and password'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    if (!_isEmailValid || !_isPasswordValid) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Invalid Input'),
-          content: Text(
-            !_isEmailValid
-                ? 'Please enter a valid email with @'
-                : 'Password must be at least 6 characters',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-    });
-
+  Future<void> login() async {
+    if (_isLoading) return;
+    setState(() => _isLoading = true);
     try {
-      UserCredential user = await _auth.signInWithEmailAndPassword(
-          email: email, password: password);
-      
-      Fluttertoast.showToast(msg: 'Login Successful');
-      
-      await Future.delayed(const Duration(milliseconds: 500));
-      
-      Navigator.pushReplacement(
-        context,
-        PageRouteBuilder(
-          transitionDuration: const Duration(milliseconds: 800),
-          pageBuilder: (context, animation, secondaryAnimation) => const HomePage(),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            const begin = Offset(1.0, 0.0);
-            const end = Offset.zero;
-            const curve = Curves.easeInOut;
-            
-            var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
-            var offsetAnimation = animation.drive(tween);
-            
-            return SlideTransition(
-              position: offsetAnimation,
-              child: child,
-            );
-          },
-        ),
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: emailController.text.trim(),
+        password: passwordController.text,
       );
-    } catch (e) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Login Failed'),
-          content: Text('Error: $e'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+      // Rely on AuthGate (authStateChanges) to navigate after a successful sign-in
+      Fluttertoast.showToast(msg: 'Welcome back');
+      // If this LoginPage was pushed on top of AuthGate (e.g., from logout flow),
+      // pop it so the underlying AuthGate can reveal Home.
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.of(context).pop();
       }
+    } on FirebaseAuthException catch (e) {
+      Fluttertoast.showToast(msg: e.message ?? 'Login failed');
+    } catch (_) {
+      Fluttertoast.showToast(msg: 'Something went wrong');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -196,28 +55,15 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     return Scaffold(
       body: Stack(
         children: [
-          AnimatedBuilder(
-            animation: _controller,
-            builder: (context, child) {
-              return Container(
-                width: double.infinity,
-                height: double.infinity,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      _colorAnimation.value!,
-                      _colorAnimation.value!.withOpacity(0.8),
-                      const Color(0xFF151A30),
-                      const Color.fromARGB(255, 55, 31, 87),
-                    ],
-                  ),
-                ),
-              );
-            },
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF1E1E2C), Color(0xFF2D1B55)],
+              ),
+            ),
           ),
-          
           Center(
             child: SingleChildScrollView(
               child: Container(
@@ -256,8 +102,6 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                       ),
                     ),
                     const SizedBox(height: 25),
-
-                    // 🔹 EMAIL FIELD
                     TextField(
                       controller: emailController,
                       decoration: InputDecoration(
@@ -274,10 +118,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 20),
-
-                    // 🔹 PASSWORD FIELD with show/hide icon
                     TextField(
                       controller: passwordController,
                       obscureText: _obscurePassword,
@@ -294,9 +135,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                             color: Colors.deepPurple.shade800,
                           ),
                           onPressed: () {
-                            setState(() {
-                              _obscurePassword = !_obscurePassword;
-                            });
+                            setState(() => _obscurePassword = !_obscurePassword);
                           },
                         ),
                         isDense: false,
@@ -306,9 +145,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 20),
-                    
                     _isLoading
                         ? const CircularProgressIndicator(
                             valueColor: AlwaysStoppedAnimation<Color>(Colors.deepPurple),
@@ -326,15 +163,10 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                                 ),
                                 elevation: 5,
                               ),
-                              child: const Text(
-                                'Login',
-                                style: TextStyle(fontSize: 16),
-                              ),
+                              child: const Text('Login', style: TextStyle(fontSize: 16)),
                             ),
                           ),
-
                     const SizedBox(height: 20),
-
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -348,14 +180,9 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                                   const begin = Offset(0.0, 1.0);
                                   const end = Offset.zero;
                                   const curve = Curves.easeInOut;
-                                  
                                   var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
                                   var offsetAnimation = animation.drive(tween);
-                                  
-                                  return SlideTransition(
-                                    position: offsetAnimation,
-                                    child: child,
-                                  );
+                                  return SlideTransition(position: offsetAnimation, child: child);
                                 },
                               ),
                             );
@@ -364,14 +191,9 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                             backgroundColor: Colors.deepPurple,
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                           ),
-                          child: const Text(
-                            'Sign Up',
-                            style: TextStyle(fontSize: 14),
-                          ),
+                          child: const Text('Sign Up', style: TextStyle(fontSize: 14)),
                         ),
                         ElevatedButton(
                           onPressed: () {
@@ -383,14 +205,9 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                                   const begin = Offset(1.0, 0.0);
                                   const end = Offset.zero;
                                   const curve = Curves.easeInOut;
-                                  
                                   var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
                                   var offsetAnimation = animation.drive(tween);
-                                  
-                                  return SlideTransition(
-                                    position: offsetAnimation,
-                                    child: child,
-                                  );
+                                  return SlideTransition(position: offsetAnimation, child: child);
                                 },
                               ),
                             );
@@ -399,14 +216,9 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                             backgroundColor: Colors.deepPurple,
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                           ),
-                          child: const Text(
-                            'Forgot',
-                            style: TextStyle(fontSize: 14),
-                          ),
+                          child: const Text('Forgot', style: TextStyle(fontSize: 14)),
                         ),
                       ],
                     ),

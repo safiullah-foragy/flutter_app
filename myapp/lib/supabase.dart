@@ -26,7 +26,8 @@ Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'p
     final String finalFileName = fileName ?? '${DateTime.now().millisecondsSinceEpoch}${p.extension(imageFile.path)}';
 
     // Derive a reasonable contentType from file extension
-    final String ext = p.extension(imageFile.path).toLowerCase();
+    // Prefer the extension of the final upload name (if supplied) so headers match the stored name
+    final String ext = p.extension(finalFileName.isNotEmpty ? finalFileName : imageFile.path).toLowerCase();
     String? contentType;
     if (ext == '.jpg' || ext == '.jpeg') contentType = 'image/jpeg';
     else if (ext == '.png') contentType = 'image/png';

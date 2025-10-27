@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'app_cache_manager.dart';
 import 'supabase.dart' as sb;
 import 'videos.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -874,6 +875,7 @@ class _ChatPageState extends State<ChatPage> {
                                                     borderRadius: BorderRadius.circular(8),
                                                     child: CachedNetworkImage(
                                                       imageUrl: fileUrl,
+                                                      cacheManager: AppCacheManager.instance,
                                                       width: 200,
                                                       fit: BoxFit.cover,
                                                       errorWidget: (context, url, error) => const Icon(Icons.error),
@@ -1273,6 +1275,7 @@ class ImageViewerPage extends StatelessWidget {
           maxScale: 4,
           child: CachedNetworkImage(
             imageUrl: imageUrl,
+            cacheManager: AppCacheManager.instance,
             fit: BoxFit.contain,
             errorWidget: (c, u, e) => const Icon(Icons.error, color: Colors.white),
           ),
@@ -1343,7 +1346,11 @@ class ConversationMediaPage extends StatelessWidget {
                   },
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+                    child: CachedNetworkImage(
+                      imageUrl: url,
+                      fit: BoxFit.cover,
+                      cacheManager: AppCacheManager.instance,
+                    ),
                   ),
                 );
               } else {

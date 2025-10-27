@@ -1,34 +1,151 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
 
-    // Conversations collection
+    // USERS
+    match /users/{uid} {
+      // Allow authenticated users to read user profiles
+      allow read: if signedIn();
+      // Users can create/update/delete their own profile
+      allow create, update, delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    // POSTS (Public feed)
+    match /posts/{postId} {
+      function isOwner() { return signedIn() && resource.data.user_id == request.auth.uid; }
+
+      // Read public posts, or the owner's own posts
+      allow read: if resource.data.is_private == false || (signedIn() && resource.data.user_id == request.auth.uid);
+
+      // Create: only the owner can create with their uid
+      allow create: if signedIn()
+                    && request.resource.data.user_id == request.auth.uid;
+
+  // Update:
+      // - Owner can edit content fields (keep user_id and timestamp immutable)
+      // - Any signed-in user may atomically +/-1 likes_count or comments_count (for like/comment actions)
+      allow update: if (
+          // Owner edits post fields
+          (isOwner()
+            && request.resource.data.user_id == resource.data.user_id
+            && request.resource.data.timestamp == resource.data.timestamp
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','image_url','video_url','is_private','edited','likes_count','comments_count'])
+          )
+          ||
+          // Anyone adjusts likes_count by +/-1 only
+          (signedIn()
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['likes_count'])
+            && (
+              request.resource.data.likes_count == resource.data.likes_count + 1 ||
+              request.resource.data.likes_count == resource.data.likes_count - 1
+            )
+          )
+          ||
+          // Anyone adjusts comments_count by +/-1 only
+          (signedIn()
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['comments_count'])
+            && (
+              request.resource.data.comments_count == resource.data.comments_count + 1 ||
+              request.resource.data.comments_count == resource.data.comments_count - 1
+            )
+          )
+        );
+
+      // Delete: only the owner can delete their post (applies to any post_type including 'job')
+      allow delete: if isOwner();
+
+      // COMMENTS subcollection
+      match /comments/{commentId} {
+        function post() { return get(/databases/$(database)/documents/posts/$(postId)); }
+        function postOwner() { return post().data.user_id; }
+        // Read if post is public or requester is the post owner
+        allow read: if post().data.is_private == false || (signedIn() && request.auth.uid == postOwner());
+        // Create by the commenting user
+        allow create: if signedIn()
+                      && request.resource.data.user_id == request.auth.uid
+                      && request.resource.data.keys().hasOnly(['user_id','text','timestamp','edited']);
+        // Update text by the author only
+        allow update: if signedIn()
+                      && resource.data.user_id == request.auth.uid
+                      && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','edited']);
+        // Delete by author or post owner
+        allow delete: if signedIn()
+                      && (resource.data.user_id == request.auth.uid || request.auth.uid == postOwner());
+      }
+
+      // LIKES subcollection: documents keyed by liker uid
+      match /likes/{likeUid} {
+        // Read only your own like doc
+        allow read: if signedIn() && likeUid == request.auth.uid;
+        // Create/update/delete only your own like doc
+        allow create, update: if signedIn() && likeUid == request.auth.uid
+                              && request.resource.data.keys().hasOnly(['reaction','timestamp']);
+        allow delete: if signedIn() && likeUid == request.auth.uid;
+      }
+    }
+
+    // CONVERSATIONS (DMs)
     match /conversations/{convId} {
-      allow read: if request.auth != null && request.auth.uid in resource.data.participants;
+      function participantIds() { return resource.data.participants; }
+      function isParticipant() { return signedIn() && request.auth.uid in participantIds(); }
 
-      allow create: if request.auth != null
+      allow read: if isParticipant();
+      allow create: if signedIn()
                     && request.resource.data.participants is list
                     && request.auth.uid in request.resource.data.participants;
-
-      // Allow updates by participants, but ensure participants array is not changed here.
-      allow update: if request.auth != null
-                    && request.auth.uid in resource.data.participants
+      // Allow participants to update convo metadata; participants array must not change
+      allow update: if isParticipant()
                     && request.resource.data.participants == resource.data.participants
-                    // Permit updates to conversation metadata only
-                    && (request.resource.data.keys().hasOnly(['participants','last_message','last_updated','archived','typing','last_read']) || true);
+                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['last_message','last_updated','archived','typing','last_read','participants']);
 
-      // Messages subcollection
+      // Messages
       match /messages/{messageId} {
-        allow read: if request.auth != null
-                    && request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participants;
+        function conv() { return get(/databases/$(database)/documents/conversations/$(convId)); }
+        function msgParticipants() { return conv().data.participants; }
+        function isMsgParticipant() { return signedIn() && request.auth.uid in msgParticipants(); }
 
-        allow create: if request.auth != null
+        allow read: if isMsgParticipant();
+        // Create by sender who is a participant
+        allow create: if isMsgParticipant()
                       && request.resource.data.sender_id == request.auth.uid
                       && request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited']);
 
-        allow update, delete: if request.auth != null
-                              && resource.data.sender_id == request.auth.uid;
+        // Update:
+        // - Any participant may update reactions only
+        // - Sender may edit text/edited (and reactions)
+        allow update: if isMsgParticipant() && (
+                        request.resource.data.diff(resource.data).changedKeys().hasOnly(['reactions']) ||
+                        (resource.data.sender_id == request.auth.uid && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','edited','reactions']))
+                      );
+        // Delete by sender only
+        allow delete: if isMsgParticipant() && resource.data.sender_id == request.auth.uid;
       }
+    }
+
+    // NOTIFICATIONS
+    match /notifications/{notifId} {
+      // Read only your own notifications
+      allow read: if signedIn() && resource.data.to == request.auth.uid;
+      // Create (client-side): must target the post owner and be authored by the actor
+      allow create: if signedIn()
+                    && request.resource.data.keys().hasOnly(['to','type','from','fromName','postId','timestamp','read','expiresAt'])
+                    && request.resource.data.from == request.auth.uid
+                    && request.resource.data.type in ['like','comment']
+                    && request.resource.data.read == false
+                    && request.resource.data.to == get(/databases/$(database)/documents/posts/$(request.resource.data.postId)).data.user_id
+                    && request.resource.data.expiresAt is timestamp
+                    && request.resource.data.expiresAt > request.time
+                    && request.resource.data.expiresAt <= request.time + duration.value(31, 'd');
+      // Update: recipient can mark as read
+      allow update: if signedIn()
+                    && resource.data.to == request.auth.uid
+                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['read'])
+                    && request.resource.data.read == true;
+      // Optional: allow recipient to delete their notifications
+      allow delete: if signedIn() && resource.data.to == request.auth.uid;
     }
 
     // Deny everything else by default

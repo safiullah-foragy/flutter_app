@@ -68,3 +68,85 @@ exports.onMessageCreated = functions.firestore
 
     return null;
   });
+
+// Create a notification when a new comment is added to a post
+exports.onPostCommentCreated = functions.firestore
+  .document('posts/{postId}/comments/{commentId}')
+  .onCreate(async (snap, context) => {
+    const data = snap.data() || {};
+    const postId = context.params.postId;
+    const from = data.user_id;
+    if (!from) return null;
+
+    try {
+      const postSnap = await admin.firestore().collection('posts').doc(postId).get();
+      if (!postSnap.exists) return null;
+      const post = postSnap.data() || {};
+      const to = post.user_id;
+      if (!to || to === from) return null; // skip self
+
+      // fromName best-effort lookup
+      let fromName = '';
+      try {
+        const userSnap = await admin.firestore().collection('users').doc(from).get();
+        if (userSnap.exists) {
+          const u = userSnap.data() || {};
+          fromName = u.name || u.displayName || '';
+        }
+      } catch (_) {}
+
+      await admin.firestore().collection('notifications').add({
+        to,
+        type: 'comment',
+        from,
+        fromName,
+        postId,
+        timestamp: Date.now(),
+        read: false,
+      });
+    } catch (e) {
+      console.error('onPostCommentCreated error', e);
+    }
+    return null;
+  });
+
+// Create a notification when a like doc is created (first-like)
+exports.onPostLikeCreated = functions.firestore
+  .document('posts/{postId}/likes/{likeUid}')
+  .onCreate(async (snap, context) => {
+    const data = snap.data() || {};
+    const postId = context.params.postId;
+    const from = data.user_id || context.params.likeUid; // like doc id is the liker uid
+    if (!from) return null;
+
+    try {
+      const postSnap = await admin.firestore().collection('posts').doc(postId).get();
+      if (!postSnap.exists) return null;
+      const post = postSnap.data() || {};
+      const to = post.user_id;
+      if (!to || to === from) return null; // skip self
+
+      // fromName best-effort lookup
+      let fromName = '';
+      try {
+        const userSnap = await admin.firestore().collection('users').doc(from).get();
+        if (userSnap.exists) {
+          const u = userSnap.data() || {};
+          fromName = u.name || u.displayName || '';
+        }
+      } catch (_) {}
+
+      await admin.firestore().collection('notifications').add({
+        to,
+        type: 'like',
+        from,
+        fromName,
+        postId,
+        timestamp: Date.now(),
+        read: false,
+      });
+    } catch (e) {
+      console.error('onPostLikeCreated error', e);
+    }
+    return null;
+  });

@@ -11,11 +11,12 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'login.dart';
 import 'newsfeed.dart';
 import 'ProfileImagesPage.dart';
 import 'package:intl/intl.dart';
 import 'supabase.dart' as sb;
+import 'app_cache_manager.dart';
+import 'theme_controller.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -258,6 +259,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         try {
           final postData = doc.data() as Map<String, dynamic>?;
           if (postData == null) continue;
+          // Exclude job posts from profile/general posts; jobs are managed in Jobs page
+          if ((postData['post_type'] ?? '') == 'job') continue;
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
@@ -324,6 +327,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         try {
           final postData = doc.data() as Map<String, dynamic>?;
           if (postData == null) continue;
+          // Exclude job posts from profile/general posts
+          if ((postData['post_type'] ?? '') == 'job') continue;
           String postId = doc.id;
 
           String userId = postData['user_id'] ?? '';
@@ -475,6 +480,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         'comments_count': FieldValue.increment(1),
       });
 
+      // Create a notification for the post owner (client-side) with a 30-day TTL
+      try {
+        final postSnap = await _firestore.collection('posts').doc(postId).get();
+        final postData = postSnap.data();
+        final String? to = (postData?['user_id']) as String?;
+        if (to != null && to.isNotEmpty && to != user.uid) {
+          await _firestore.collection('notifications').add({
+            'to': to,
+            'type': 'comment',
+            'from': user.uid,
+            'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+            'postId': postId,
+            'timestamp': timestamp,
+            'read': false,
+            'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+          });
+        }
+      } catch (_) {
+        // best-effort; ignore failures
+      }
+
       setState(() {
         postComments[postId] = postComments[postId] ?? [];
         postComments[postId]!.add({
@@ -550,49 +576,85 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       if (user == null) {
         return;
       }
+      final postRef = _firestore.collection('posts').doc(postId);
+      final likeRef = postRef.collection('likes').doc(user.uid);
 
-      final docRef = _firestore
-          .collection('posts')
-          .doc(postId)
-          .collection('likes')
-          .doc(user.uid);
+      String result = 'none';
+      String newReaction = reaction;
+      await _firestore.runTransaction((tx) async {
+        final likeSnap = await tx.get(likeRef);
+        final postSnap = await tx.get(postRef);
+        if (!postSnap.exists) return;
 
-      DocumentSnapshot likeDoc = await docRef.get();
-      bool wasLiked = likeDoc.exists;
-      String oldReaction = wasLiked ? (likeDoc.get('reaction') ?? 'like') : '';
-
-      if (wasLiked && oldReaction == reaction) {
-        await docRef.delete();
-        setState(() {
-          userReactions[postId] = '';
-          postLikes[postId] = (postLikes[postId] ?? 1) - 1;
-        });
-        await _firestore.collection('posts').doc(postId).update({
-          'likes_count': FieldValue.increment(-1),
-        });
-      } else {
-        await docRef.set({
-          'user_id': user.uid,
-          'reaction': reaction,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        });
-        setState(() {
-          userReactions[postId] = reaction;
-          if (!wasLiked) {
-            postLikes[postId] = (postLikes[postId] ?? 0) + 1;
+        if (likeSnap.exists) {
+          final prev = likeSnap.data();
+          final String prevReaction = (prev?['reaction'] ?? '') as String;
+          if (prevReaction == reaction) {
+            // Unlike
+            tx.delete(likeRef);
+            tx.update(postRef, {'likes_count': FieldValue.increment(-1)});
+            result = 'unlike';
+          } else {
+            // Reaction change only
+            tx.update(likeRef, {
+              'reaction': reaction,
+              'timestamp': DateTime.now().millisecondsSinceEpoch,
+            });
+            result = 'reactionChange';
           }
-          likeAnimationControllers[postId]?.forward(from: 0);
-        });
-        if (!wasLiked) {
-          await _firestore.collection('posts').doc(postId).update({
-            'likes_count': FieldValue.increment(1),
+        } else {
+          // First-like
+          tx.set(likeRef, {
+            'reaction': reaction,
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
           });
+          tx.update(postRef, {'likes_count': FieldValue.increment(1)});
+          result = 'firstLike';
+
+          // Create notification doc inside the transaction
+          final postData = postSnap.data();
+          final String? to = postData?['user_id'] as String?;
+          if (to != null && to.isNotEmpty && to != user.uid) {
+            final notifRef = _firestore.collection('notifications').doc();
+            tx.set(notifRef, {
+              'to': to,
+              'type': 'like',
+              'from': user.uid,
+              'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+              'postId': postId,
+              'timestamp': DateTime.now().millisecondsSinceEpoch,
+              'read': false,
+              'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+            });
+          }
         }
-      }
+      });
+
+      if (!mounted) return;
+      setState(() {
+        switch (result) {
+          case 'unlike':
+            userReactions[postId] = '';
+            postLikes[postId] = (postLikes[postId] ?? 1) - 1;
+            break;
+          case 'firstLike':
+            userReactions[postId] = newReaction;
+            postLikes[postId] = (postLikes[postId] ?? 0) + 1;
+            likeAnimationControllers[postId]?.forward(from: 0);
+            break;
+          case 'reactionChange':
+            userReactions[postId] = newReaction;
+            break;
+          default:
+            break;
+        }
+      });
     } catch (e) {
       print('Error toggling like: $e');
     }
   }
+
+  // Notifications are created server-side via Cloud Functions
 
   void _showReactionOptions(String postId) {
     showModalBottomSheet(
@@ -1003,26 +1065,71 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         title: const Text('User Profile'),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              try {
-                await FirebaseAuth.instance.signOut();
-                Navigator.pushReplacement(
-                  context, 
-                  MaterialPageRoute(builder: (_) => const LoginPage())
-                );
-              } catch (e) {
-                Fluttertoast.showToast(
-                  msg: 'Error signing out: $e',
-                  toastLength: Toast.LENGTH_SHORT,
-                  backgroundColor: Colors.red,
-                );
-              }
-            },
+      ),
+      drawer: Drawer(
+        child: SafeArea(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              UserAccountsDrawerHeader(
+                accountName: Text((userData?['name'] ?? user?.displayName ?? 'User') as String),
+                accountEmail: Text((userData?['email'] ?? user?.email ?? '') as String),
+                currentAccountPicture: CircleAvatar(
+                  backgroundColor: Colors.white,
+                  backgroundImage: (userData?['profile_image'] != null && (userData?['profile_image'] as String).isNotEmpty)
+                      ? CachedNetworkImageProvider(userData!['profile_image'] as String)
+                      : null,
+                  child: (userData?['profile_image'] == null || (userData?['profile_image'] as String).isEmpty)
+                      ? const Icon(Icons.person, color: Colors.grey)
+                      : null,
+                ),
+                decoration: const BoxDecoration(color: Colors.blue),
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.dark_mode),
+                title: const Text('Night Mode'),
+                value: ThemeController.instance.mode == ThemeMode.dark,
+                onChanged: (val) => ThemeController.instance.setDark(val),
+              ),
+              ExpansionTile(
+                leading: const Icon(Icons.color_lens),
+                title: const Text('Theme Colors'),
+                children: [
+                  ...ThemeController.instance.availableSeedKeys.map((key) {
+                    final selected = ThemeController.instance.seedKey == key;
+                    final color = ThemeController.instance.colorFor(key);
+                    return ListTile(
+                      leading: CircleAvatar(backgroundColor: color),
+                      title: Text(ThemeController.instance.displayName(key)),
+                      trailing: selected ? const Icon(Icons.check, color: Colors.green) : null,
+                      onTap: () => ThemeController.instance.setSeed(key),
+                    );
+                  }),
+                ],
+              ),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Logout'),
+                onTap: () async {
+                  Navigator.of(context).pop(); // close drawer first
+                  try {
+                    await FirebaseAuth.instance.signOut();
+                    if (!context.mounted) return;
+                    // Do not push LoginPage; rely on AuthGate at app root to show it.
+                    // Simply clear back to the root so AuthGate can rebuild.
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  } catch (e) {
+                    Fluttertoast.showToast(
+                      msg: 'Error signing out: $e',
+                      toastLength: Toast.LENGTH_SHORT,
+                      backgroundColor: Colors.red,
+                    );
+                  }
+                },
+              ),
+            ],
           ),
-        ],
+        ),
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -1347,6 +1454,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             if (post['image_url']?.isNotEmpty ?? false)
               CachedNetworkImage(
                 imageUrl: post['image_url'],
+                cacheManager: AppCacheManager.instance,
                 placeholder: (context, url) => const SizedBox(
                   height: 200,
                   child: Center(child: CircularProgressIndicator()),

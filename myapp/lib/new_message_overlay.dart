@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/material.dart';
 import 'messages.dart' show ChatPage; // to navigate into the conversation
+import 'app_cache_manager.dart';
 
 /// A global overlay that shows a small bubble when there's an unread conversation.
 /// Appears above every page while the app is running.
@@ -14,19 +15,36 @@ class GlobalNewMessageBubble extends StatefulWidget {
   State<GlobalNewMessageBubble> createState() => _GlobalNewMessageBubbleState();
 }
 
-class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> {
+class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> with WidgetsBindingObserver {
   final _auth = firebase_auth.FirebaseAuth.instance;
   final _firestore = FirebaseFirestore.instance;
 
   StreamSubscription<QuerySnapshot>? _sub;
+  StreamSubscription<firebase_auth.User?>? _authSub;
   String? _convId;
   String? _otherId;
   String? _lastMsg;
-  final Set<String> _dismissed = <String>{};
+  // Track until which last_updated a conversation was dismissed.
+  // If a newer message arrives (last_updated increases), bubble can reappear.
+  final Map<String, int> _dismissedUntil = <String, int>{};
+  int? _shownUpdated;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Start or stop listening as auth changes
+    _authSub = _auth.authStateChanges().listen((user) {
+      // Clear UI state when user changes
+      setState(() {
+        _convId = null;
+        _otherId = null;
+        _lastMsg = null;
+        _shownUpdated = null;
+        _dismissedUntil.clear();
+      });
+      _startListening();
+    });
     _startListening();
   }
 
@@ -48,7 +66,9 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> {
         final data = d.data() as Map<String, dynamic>? ?? {};
         final lastRead = (Map<String, dynamic>.from(data['last_read'] ?? {}))[uid] ?? 0;
         final updated = (data['last_updated'] ?? 0) as int;
-        if (updated > lastRead && !_dismissed.contains(d.id)) {
+        // Show if unread and not dismissed for this update value
+        final dismissedUntil = _dismissedUntil[d.id] ?? 0;
+        if (updated > lastRead && updated > dismissedUntil) {
           if (updated > bestUpdated) {
             final parts = List<String>.from(data['participants'] ?? <String>[]);
             final other = parts.firstWhere((p) => p != uid, orElse: () => '');
@@ -65,6 +85,7 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> {
         _convId = bestConvId;
         _otherId = bestOtherId;
         _lastMsg = bestLastMsg;
+        _shownUpdated = bestUpdated == 0 ? null : bestUpdated;
       });
     });
   }
@@ -72,7 +93,17 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> {
   @override
   void dispose() {
     _sub?.cancel();
+    _authSub?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // On resume, refresh listener in case the auth/session changed while backgrounded
+    if (state == AppLifecycleState.resumed) {
+      _startListening();
+    }
   }
 
   @override
@@ -98,7 +129,8 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> {
             } catch (_) {}
           }
           if (mounted) {
-            Navigator.of(context).push(
+            // Do not clear local state before we push; if we need to hide, we'll update after push
+            await Navigator.of(context, rootNavigator: true).push(
               MaterialPageRoute(
                 builder: (_) => ChatPage(conversationId: convId, otherUserId: otherId),
               ),
@@ -107,10 +139,13 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> {
         },
         onDismiss: () {
           setState(() {
-            _dismissed.add(convId);
+            // Remember the last_updated of the shown conversation; only re-show on newer updates
+            final u = _shownUpdated ?? DateTime.now().millisecondsSinceEpoch;
+            _dismissedUntil[convId] = u;
             _convId = null;
             _otherId = null;
             _lastMsg = null;
+            _shownUpdated = null;
           });
         },
       ),
@@ -139,12 +174,9 @@ class _Bubble extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onTap: onOpen,
-        child: Dismissible(
-          key: ValueKey('global_bubble_$conversationId'),
-          direction: DismissDirection.down,
-          onDismissed: (_) => onDismiss(),
-          child: Container(
+        child: Container(
             constraints: const BoxConstraints(maxWidth: 280),
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
@@ -171,7 +203,12 @@ class _Bubble extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         (avatarUrl != null && avatarUrl.isNotEmpty)
-                            ? CircleAvatar(backgroundImage: CachedNetworkImageProvider(avatarUrl))
+                            ? CircleAvatar(
+                                backgroundImage: CachedNetworkImageProvider(
+                                  avatarUrl,
+                                  cacheManager: AppCacheManager.instance,
+                                ),
+                              )
                             : CircleAvatar(
                                 backgroundColor: Colors.blue,
                                 child: Text(
@@ -213,7 +250,6 @@ class _Bubble extends StatelessWidget {
               ],
             ),
           ),
-        ),
       ),
     );
   }
