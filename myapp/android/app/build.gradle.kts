@@ -56,4 +56,7 @@ dependencies {
     // Ensure Firebase Messaging classes are available for the custom service
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-messaging")
+    // Needed by MessageWatcherService for native Firestore/Auth access
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
 }

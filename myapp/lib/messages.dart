@@ -12,6 +12,8 @@ import 'videos.dart';
 import 'package:url_launcher/url_launcher.dart';
 // import 'newsfeed.dart'; // No direct usage here
 import 'see_profile_from_newsfeed.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'background_tasks.dart';
 
 /// Conversations list and chat screen.
 class MessagesPage extends StatefulWidget {
@@ -111,6 +113,7 @@ class _MessagesPageState extends State<MessagesPage> {
           // Global overlay handles unread bubble; no per-page top unread detection needed here.
 
           final Widget listView = ListView.builder(
+            restorationId: 'conversations_list',
             itemCount: convs.length,
             itemBuilder: (context, index) {
               final d = convs[index]['doc'] as QueryDocumentSnapshot;
@@ -130,8 +133,12 @@ class _MessagesPageState extends State<MessagesPage> {
                   trailing: Text(_formatTimestamp(lastUpdated)),
                   onTap: () async {
                     await _markConversationRead(d.id, uid);
-                    Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => ChatPage(conversationId: d.id, otherUserId: otherId))
+                    Navigator.of(context).restorablePush(
+                      ChatPage.restorableRoute,
+                      arguments: {
+                        'conversationId': d.id,
+                        'otherUserId': otherId,
+                      },
                     );
                   },
                 );
@@ -222,8 +229,12 @@ class _MessagesPageState extends State<MessagesPage> {
                       ),
                       onTap: () async {
                         await _markConversationRead(d.id, uid);
-                        Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => ChatPage(conversationId: d.id, otherUserId: otherId))
+                        Navigator.of(context).restorablePush(
+                          ChatPage.restorableRoute,
+                          arguments: {
+                            'conversationId': d.id,
+                            'otherUserId': otherId,
+                          },
                         );
                       },
                     ),
@@ -466,8 +477,12 @@ class _MessagesPageState extends State<MessagesPage> {
       convId = ref.id;
     }
 
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => ChatPage(conversationId: convId!, otherUserId: otherId))
+    Navigator.of(context).restorablePush(
+      ChatPage.restorableRoute,
+      arguments: {
+        'conversationId': convId,
+        'otherUserId': otherId,
+      },
     );
   }
 
@@ -501,6 +516,16 @@ class ChatPage extends StatefulWidget {
   final String otherUserId;
 
   const ChatPage({required this.conversationId, required this.otherUserId, super.key});
+
+  // Restorable route builder for state restoration
+  static Route<Object?> restorableRoute(BuildContext context, Object? arguments) {
+    final Map args = (arguments as Map?) ?? const {};
+    final String convId = (args['conversationId'] ?? '') as String;
+    final String otherId = (args['otherUserId'] ?? '') as String;
+    return MaterialPageRoute(
+      builder: (_) => ChatPage(conversationId: convId, otherUserId: otherId),
+    );
+  }
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -602,17 +627,53 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _pickAndSendImage() async {
     try {
       final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery, 
-        imageQuality: 80
+        source: ImageSource.gallery,
+        imageQuality: 80,
       );
       if (picked == null) return;
       setState(() => _sending = true);
 
+      // If offline on mobile/desktop, enqueue upload with a placeholder message
+      final conn = await Connectivity().checkConnectivity();
+      final offline = conn == ConnectivityResult.none;
+      if (!kIsWeb && offline) {
+        final uid = _auth.currentUser?.uid;
+        if (uid != null) {
+          final msgRef = await _firestore
+              .collection('conversations')
+              .doc(widget.conversationId)
+              .collection('messages')
+              .add({
+            'sender_id': uid,
+            'text': '',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'file_url': '',
+            'file_type': 'image',
+            'reactions': <String, dynamic>{},
+            'edited': false,
+            'uploading': true,
+          });
+
+          await BackgroundTasks.enqueueAction({
+            'type': 'upload_message_image',
+            'conversationId': widget.conversationId,
+            'messageId': msgRef.id,
+            'localPath': picked.path,
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Image will upload when back online')),
+          );
+          setState(() => _sending = false);
+          return;
+        }
+      }
+
+      // Online path (or web): upload now
       String url = '';
       try {
         if (kIsWeb) {
           final bytes = await picked.readAsBytes();
-          // Infer content type from file name
           final name = picked.name;
           String? ct;
           final lower = name.toLowerCase();
@@ -628,7 +689,7 @@ class _ChatPageState extends State<ChatPage> {
       } catch (e) {
         debugPrint('Image upload error: $e');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to upload image: ${e.toString()}'))
+          SnackBar(content: Text('Failed to upload image: ${e.toString()}')),
         );
         setState(() => _sending = false);
         return;
@@ -647,6 +708,43 @@ class _ChatPageState extends State<ChatPage> {
       if (picked == null) return;
       setState(() => _sending = true);
 
+      // If offline on mobile/desktop, enqueue upload with a placeholder message
+      final conn = await Connectivity().checkConnectivity();
+      final offline = conn == ConnectivityResult.none;
+      if (!kIsWeb && offline) {
+        final uid = _auth.currentUser?.uid;
+        if (uid != null) {
+          final msgRef = await _firestore
+              .collection('conversations')
+              .doc(widget.conversationId)
+              .collection('messages')
+              .add({
+            'sender_id': uid,
+            'text': '',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'file_url': '',
+            'file_type': 'video',
+            'reactions': <String, dynamic>{},
+            'edited': false,
+            'uploading': true,
+          });
+
+          await BackgroundTasks.enqueueAction({
+            'type': 'upload_message_video',
+            'conversationId': widget.conversationId,
+            'messageId': msgRef.id,
+            'localPath': picked.path,
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Video will upload when back online')),
+          );
+          setState(() => _sending = false);
+          return;
+        }
+      }
+
+      // Online path (or web): upload now
       String url = '';
       try {
         if (kIsWeb) {
@@ -666,12 +764,12 @@ class _ChatPageState extends State<ChatPage> {
       } catch (e) {
         debugPrint('Video upload error: $e');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to upload video: ${e.toString()}'))
+          SnackBar(content: Text('Failed to upload video: ${e.toString()}')),
         );
         setState(() => _sending = false);
         return;
       }
-      
+
       await _sendMessage(fileUrl: url, fileType: 'video');
     } catch (e) {
       debugPrint('Video picker error: $e');
@@ -773,7 +871,7 @@ class _ChatPageState extends State<ChatPage> {
         children: [
           Expanded(
             child: StreamBuilder<DocumentSnapshot>(
-              stream: _firestore.collection('conversations').doc(widget.conversationId).snapshots(),
+              stream: _firestore.collection('conversations').doc(widget.conversationId).snapshots(includeMetadataChanges: true),
               builder: (context, convSnap) {
                 bool otherIsTyping = false;
                 int otherLastRead = 0;
@@ -791,7 +889,7 @@ class _ChatPageState extends State<ChatPage> {
                       .doc(widget.conversationId)
                       .collection('messages')
                       .orderBy('timestamp', descending: false)
-                      .snapshots(),
+                      .snapshots(includeMetadataChanges: true),
                   builder: (context, snap) {
                     if (snap.hasError) {
                       debugPrint('Messages stream error: ${snap.error}');
@@ -810,6 +908,7 @@ class _ChatPageState extends State<ChatPage> {
                       children: [
                         Expanded(
                           child: ListView.builder(
+                            restorationId: 'chat_list_' + widget.conversationId,
                             controller: _scrollController,
                             padding: const EdgeInsets.all(8),
                             itemCount: docs.length + (otherIsTyping ? 1 : 0),
@@ -833,6 +932,8 @@ class _ChatPageState extends State<ChatPage> {
                               final timestamp = data['timestamp'] ?? 0;
                               final seen = isMe && otherLastRead >= timestamp;
                               final edited = data['edited'] == true;
+                              final uploading = data['uploading'] == true;
+                              final pending = d.metadata.hasPendingWrites;
 
                               return Align(
                                 alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -918,6 +1019,25 @@ class _ChatPageState extends State<ChatPage> {
                                                 padding: const EdgeInsets.only(bottom: 4.0),
                                                 child: Text(text, style: TextStyle(color: isMe ? Colors.white : Colors.black)),
                                               ),
+                                            if (uploading)
+                                              Padding(
+                                                padding: const EdgeInsets.only(bottom: 4.0),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    const SizedBox(
+                                                      width: 12,
+                                                      height: 12,
+                                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    Text(
+                                                      'Waiting for network...',
+                                                      style: TextStyle(color: isMe ? Colors.white70 : Colors.black54, fontSize: 12),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
                                             if (edited)
                                               Padding(
                                                 padding: const EdgeInsets.only(top: 2.0),
@@ -967,9 +1087,13 @@ class _ChatPageState extends State<ChatPage> {
                                                 ),
                                                 if (isMe)
                                                   Icon(
-                                                    Icons.done_all,
+                                                    pending ? Icons.schedule : Icons.done_all,
                                                     size: 16,
-                                                    color: seen ? const Color.fromARGB(255, 175, 135, 76) : const Color.fromARGB(255, 235, 238, 237),
+                                                    color: pending
+                                                        ? (isMe ? Colors.white70 : Colors.grey)
+                                                        : (seen
+                                                            ? const Color.fromARGB(255, 175, 135, 76)
+                                                            : const Color.fromARGB(255, 235, 238, 237)),
                                                   ),
                                               ],
                                             ),

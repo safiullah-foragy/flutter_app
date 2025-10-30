@@ -28,6 +28,7 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> with Wi
   // If a newer message arrives (last_updated increases), bubble can reappear.
   final Map<String, int> _dismissedUntil = <String, int>{};
   int? _shownUpdated;
+  Timer? _autoHideTimer;
 
   @override
   void initState() {
@@ -81,19 +82,48 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> with Wi
       }
 
       if (!mounted) return;
+      final willShow = bestConvId != null;
       setState(() {
         _convId = bestConvId;
         _otherId = bestOtherId;
         _lastMsg = bestLastMsg;
         _shownUpdated = bestUpdated == 0 ? null : bestUpdated;
       });
+      // Arm or cancel auto-hide depending on visibility
+      _resetAutoHideTimer(visible: willShow);
     });
+  }
+
+  void _resetAutoHideTimer({required bool visible}) {
+    _autoHideTimer?.cancel();
+    if (visible) {
+      _autoHideTimer = Timer(const Duration(seconds: 6), () {
+        if (!mounted) return;
+        _dismissCurrent();
+      });
+    }
+  }
+
+  void _dismissCurrent() {
+    final convId = _convId;
+    if (convId == null) return;
+    setState(() {
+      final u = _shownUpdated ?? DateTime.now().millisecondsSinceEpoch;
+      _dismissedUntil[convId] = u;
+      _convId = null;
+      _otherId = null;
+      _lastMsg = null;
+      _shownUpdated = null;
+    });
+    _autoHideTimer?.cancel();
+    _autoHideTimer = null;
   }
 
   @override
   void dispose() {
     _sub?.cancel();
     _authSub?.cancel();
+    _autoHideTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -128,6 +158,7 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> with Wi
               });
             } catch (_) {}
           }
+          _autoHideTimer?.cancel();
           if (mounted) {
             // Do not clear local state before we push; if we need to hide, we'll update after push
             await Navigator.of(context, rootNavigator: true).push(
@@ -138,15 +169,7 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> with Wi
           }
         },
         onDismiss: () {
-          setState(() {
-            // Remember the last_updated of the shown conversation; only re-show on newer updates
-            final u = _shownUpdated ?? DateTime.now().millisecondsSinceEpoch;
-            _dismissedUntil[convId] = u;
-            _convId = null;
-            _otherId = null;
-            _lastMsg = null;
-            _shownUpdated = null;
-          });
+          _dismissCurrent();
         },
       ),
     );

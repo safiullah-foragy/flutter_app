@@ -148,6 +148,37 @@ service cloud.firestore {
       allow delete: if signedIn() && resource.data.to == request.auth.uid;
     }
 
+    // NOTEBOOKS
+    match /notebooks/{notebookId} {
+      function isOwner() { return signedIn() && resource.data.user_id == request.auth.uid; }
+      function isOwnerReq() { return signedIn() && request.resource.data.user_id == request.auth.uid; }
+
+      // Owners can read and write their own notebooks
+      allow read: if isOwner();
+      allow create: if isOwnerReq()
+                    && request.resource.data.keys().hasOnly(['user_id','title','created_at','updated_at']);
+      allow update: if isOwner()
+                    && request.resource.data.user_id == resource.data.user_id
+                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['title','updated_at']);
+      allow delete: if isOwner();
+
+      // Items subcollection: simple ordered content blocks
+      match /items/{itemId} {
+        function parent() { return get(/databases/$(database)/documents/notebooks/$(notebookId)); }
+        function isParentOwner() { return signedIn() && parent().data.user_id == request.auth.uid; }
+
+        allow read: if isParentOwner();
+        allow create: if isParentOwner()
+                      && request.resource.data.type in ['text','image','video']
+                      && (request.resource.data.type == 'text' ? request.resource.data.keys().hasOnly(['type','text','timestamp']) :
+                          request.resource.data.keys().hasOnly(['type','url','timestamp']));
+        allow update: if isParentOwner()
+                      && ((resource.data.type == 'text' && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text']))
+                          || (resource.data.type in ['image','video'] && request.resource.data == resource.data));
+        allow delete: if isParentOwner();
+      }
+    }
+
     // Deny everything else by default
     match /{document=**} {
       allow read, write: if false;

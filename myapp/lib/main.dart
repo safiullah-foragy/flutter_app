@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
 import 'login.dart';
 // import 'homepage.dart'; // now hosted inside HomeAndFeedPage
@@ -12,11 +13,14 @@ import 'home_and_feed.dart';
 import 'supabase.dart' as sb;
 import 'messages.dart';
 import 'fcm_web.dart';
-import 'new_message_overlay.dart';
 import 'theme_controller.dart';
+import 'background_tasks.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'connectivity_service.dart';
 
 import 'dart:async';
 import 'package:flutter/services.dart';
+// Self-check overlay removed per request
 
 void main() {
   runZonedGuarded(() async {
@@ -37,6 +41,28 @@ void main() {
     );
     // ignore: avoid_print
     print('main: Firebase initialized');
+
+    // App Check: activate providers
+    // - In development, we use Debug providers so Firestore/Functions work even when enforcement is ON.
+    // - For production, switch to Play Integrity (Android) and DeviceCheck/App Attest (Apple), and configure in Firebase Console.
+    try {
+      await FirebaseAppCheck.instance.activate(
+        androidProvider: AndroidProvider.debug,
+        appleProvider: AppleProvider.debug,
+      );
+      // Print a fresh debug token once to help register it in Firebase Console > App Check > Debug tokens
+      try {
+        final token = await FirebaseAppCheck.instance.getToken(true);
+        // ignore: avoid_print
+        print('AppCheck debug token (register this in Firebase Console if enforcement is enabled): ' + (token ?? 'null'));
+      } catch (e) {
+        // ignore: avoid_print
+        print('AppCheck getToken error: ' + e.toString());
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('AppCheck activation error: ' + e.toString());
+    }
 
     // Ensure auth persistence across app restarts (especially for Web)
     if (kIsWeb) {
@@ -66,6 +92,16 @@ void main() {
     // Push notifications setup
     if (!kIsWeb) {
       FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+      // Save FCM token ASAP if user is already signed in
+      try {
+        final u = firebase_auth.FirebaseAuth.instance.currentUser;
+        final t = await FirebaseMessaging.instance.getToken();
+        if (u != null && t != null) {
+          await FirebaseFirestore.instance.collection('users').doc(u.uid).set({
+            'fcmTokens': FieldValue.arrayUnion([t])
+          }, SetOptions(merge: true));
+        }
+      } catch (_) {}
       await _setupPushNotifications();
     }
 
@@ -75,6 +111,10 @@ void main() {
   // Start the app UI ASAP
     // ignore: avoid_print
     print('main: calling runApp');
+    // Initialize background tasks (Android): periodic flush of pending actions
+    await BackgroundTasks.initialize();
+    // Start connectivity watcher (toggles Firestore network and flushes queues)
+    await ConnectivityService.instance.initialize();
     runApp(const MyApp());
 
     // Web: request permission and get token with VAPID key (deferred; don't block startup)
@@ -117,6 +157,12 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 Future<void> _setupPushNotifications() async {
   // Request permissions (Android 13+ and iOS)
   await FirebaseMessaging.instance.requestPermission();
+  // On Android 13+, explicitly request notifications permission via local notifications plugin API
+  try {
+    await _flnp
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+  } catch (_) {}
 
   // Android local notifications init
   const AndroidInitializationSettings androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -166,6 +212,7 @@ Future<void> _setupPushNotifications() async {
     final otherId = message.data['otherUserId'] ?? '';
     if (convId != null) {
       _navigateToConversation(convId, otherId);
+      _clearBadgeNative();
     }
   });
 
@@ -176,7 +223,10 @@ Future<void> _setupPushNotifications() async {
     final otherId = initialMessage.data['otherUserId'] ?? '';
     if (convId != null) {
       // Delay until app is built
-      WidgetsBinding.instance.addPostFrameCallback((_) => _navigateToConversation(convId, otherId));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _navigateToConversation(convId, otherId);
+        _clearBadgeNative();
+      });
     }
   }
 }
@@ -190,6 +240,7 @@ void _onNotificationTap(String payload) {
     final otherId = m['otherId'] ?? '';
     if (convId.isNotEmpty) {
       _navigateToConversation(convId, otherId);
+      _clearBadgeNative();
     }
   } catch (_) {
     // Fallback: treat payload as conversationId only
@@ -201,9 +252,13 @@ void _navigateToConversation(String conversationId, String otherUserId) {
   final ctx = _MyAppNavigator.navigatorKey.currentContext;
   if (ctx == null) return;
   Future<void> doNav(String resolvedOther) async {
-    Navigator.of(ctx).push(MaterialPageRoute(
-      builder: (_) => ChatPage(conversationId: conversationId, otherUserId: resolvedOther),
-    ));
+    Navigator.of(ctx).restorablePush(
+      ChatPage.restorableRoute,
+      arguments: {
+        'conversationId': conversationId,
+        'otherUserId': resolvedOther,
+      },
+    );
   }
 
   // Ensure user is signed-in before navigating (especially on cold-start from notif)
@@ -249,6 +304,7 @@ class MyApp extends StatelessWidget {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           title: 'MyApp',
+          restorationScopeId: 'app',
           themeMode: ThemeController.instance.mode,
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: ThemeController.instance.seedColor, brightness: Brightness.light),
@@ -260,11 +316,16 @@ class MyApp extends StatelessWidget {
           ),
           navigatorKey: _MyAppNavigator.navigatorKey,
           builder: (context, child) {
-            // Place a global unread message bubble overlay on top of all routes
+            // Global unread message bubble overlay removed per request
             return Stack(
               children: [
                 if (child != null) child,
-                const GlobalNewMessageBubble(),
+                const Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: OfflineBanner(),
+                ),
               ],
             );
           },
@@ -287,16 +348,40 @@ class MessagingInitializer extends StatefulWidget {
   State<MessagingInitializer> createState() => _MessagingInitializerState();
 }
 
-class _MessagingInitializerState extends State<MessagingInitializer> {
+class _MessagingInitializerState extends State<MessagingInitializer> with WidgetsBindingObserver {
   static const MethodChannel _navChannel = MethodChannel('com.example.myapp/navigation');
+  static const MethodChannel _appChannel = MethodChannel('com.example.myapp/app');
+  StreamSubscription<firebase_auth.User?>? _authSub;
   @override
   void initState() {
     super.initState();
+    // Observe app lifecycle to start/stop Android background watcher
+    WidgetsBinding.instance.addObserver(this);
     // On web, messaging may be disabled or service worker missing; wrap to avoid crashes
     _ensureFcmTokenSaved();
     try {
       FirebaseMessaging.instance.onTokenRefresh.listen((token) => _saveFcmToken(token));
     } catch (_) {}
+    // Ensure token is saved as soon as user signs in
+    _authSub = firebase_auth.FirebaseAuth.instance.authStateChanges().listen((u) async {
+      final prefs = await SharedPreferences.getInstance();
+      final lastUid = prefs.getString('last_topic_uid');
+      if (u != null) {
+        // Save token and subscribe to a per-user topic for robust delivery
+        await _ensureFcmTokenSaved();
+        final topic = 'user_' + u.uid;
+        try { await FirebaseMessaging.instance.subscribeToTopic(topic); } catch (_) {}
+        await prefs.setString('last_topic_uid', u.uid);
+      } else {
+        // On sign out, best-effort unsubscribe from previous topic
+        if (lastUid != null && lastUid.isNotEmpty) {
+          try { await FirebaseMessaging.instance.unsubscribeFromTopic('user_' + lastUid); } catch (_) {}
+          await prefs.remove('last_topic_uid');
+        }
+        // Stop background watcher if running
+        _stopMessageWatcher();
+      }
+    });
     // Listen for navigation requests from Android native (notification taps)
     _navChannel.setMethodCallHandler((call) async {
       if (call.method == 'openConversation') {
@@ -304,6 +389,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> {
         final convId = args['conversationId'] as String?;
         if (convId != null && convId.isNotEmpty) {
           _navigateToConversation(convId, '');
+          _clearBadgeNative();
         }
       }
     });
@@ -322,6 +408,37 @@ class _MessagingInitializerState extends State<MessagingInitializer> {
     await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
       'fcmTokens': FieldValue.arrayUnion([token]),
     }, SetOptions(merge: true));
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // Start the native foreground service when app is backgrounded; stop when resumed
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!kIsWeb) {
+      if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive || state == AppLifecycleState.detached) {
+        _startMessageWatcher();
+      } else if (state == AppLifecycleState.resumed) {
+        _stopMessageWatcher();
+      }
+    }
+  }
+
+  Future<void> _startMessageWatcher() async {
+    try {
+      await _appChannel.invokeMethod('startMessageWatcher');
+    } catch (_) {}
+  }
+
+  Future<void> _stopMessageWatcher() async {
+    try {
+      await _appChannel.invokeMethod('stopMessageWatcher');
+    } catch (_) {}
   }
 
   @override
@@ -373,4 +490,10 @@ class AuthGate extends StatelessWidget {
       },
     );
   }
+}
+
+Future<void> _clearBadgeNative() async {
+  try {
+    const MethodChannel('com.example.myapp/app').invokeMethod('clearBadge');
+  } catch (_) {}
 }

@@ -11,11 +11,13 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'newsfeed.dart';
+import 'notebooks.dart';
 import 'ProfileImagesPage.dart';
 import 'package:intl/intl.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'supabase.dart' as sb;
 import 'app_cache_manager.dart';
+import 'background_tasks.dart';
 import 'theme_controller.dart';
 
 class HomePage extends StatefulWidget {
@@ -25,7 +27,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
+class _HomePageState extends State<HomePage> with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final ImagePicker _imagePicker = ImagePicker();
@@ -60,6 +62,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   bool hasConnection = true;
   Map<String, TextEditingController> perPostCommentControllers = {};
+  bool _didInitialLoad = false;
+  Timer? _longPressTimer;
+
+  // Styling option palettes
+  static const List<Color> _styleColors = [
+    Color(0xFF000000), Color(0xFF1976D2), Color(0xFFE53935), Color(0xFF43A047), Color(0xFFF57C00),
+    Color(0xFF6A1B9A), Color(0xFF00897B), Color(0xFF5D4037), Color(0xFF9E9E9E), Color(0xFFFFC107),
+  ];
+  static const List<String> _styleFonts = [
+    'Roboto', 'Lato', 'Montserrat', 'Poppins', 'Open Sans',
+    'Oswald', 'Merriweather', 'Raleway', 'Playfair Display', 'Noto Sans',
+  ];
 
   @override
   void initState() {
@@ -103,6 +117,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       });
       if (!hasConnection) {
         Fluttertoast.showToast(msg: 'No internet connection. Showing cached data if available.');
+      } else {
+        // When connectivity returns, flush any queued background actions.
+        // ignore: unawaited_futures
+        BackgroundTasks.flushPending();
+        // Avoid forcing a full reload if we already have data; live listeners will reconcile.
+        if (userPosts.isEmpty && !_didInitialLoad) {
+          // ignore: unawaited_futures
+          _fetchUserData();
+          // ignore: unawaited_futures
+          _fetchInitialUserPosts();
+        }
       }
     });
   }
@@ -110,6 +135,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   @override
   void dispose() {
     _animationController.dispose();
+    _longPressTimer?.cancel();
     _controllers.forEach((key, controller) {
       controller.dispose();
     });
@@ -163,6 +189,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             await _firestore.collection('users').doc(user.uid).get();
             
         if (userDoc.exists) {
+          if (!mounted) return;
           setState(() {
             userData = userDoc.data() as Map<String, dynamic>;
             
@@ -178,6 +205,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       }
     } catch (e) {
       print('Error fetching user data: $e');
+      if (!mounted) return;
       setState(() {
         isLoading = false;
       });
@@ -215,6 +243,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Future<void> _fetchInitialUserPosts() async {
     if (!hasConnection) {
+      if (!mounted) return;
       setState(() {});
       return;
     }
@@ -306,11 +335,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       // Ensure newest first if fallback path used
       postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
       postsList.sort((a, b) => ((b['timestamp'] ?? 0) as int).compareTo((a['timestamp'] ?? 0) as int));
+      if (!mounted) return;
       setState(() {
         userPosts = postsList;
       });
+      _didInitialLoad = true;
     } catch (e) {
       print('Error fetching initial posts: $e');
+      if (!mounted) return;
       setState(() {});
     }
   }
@@ -952,6 +984,179 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
+  // ===== Text styling helpers =====
+  TextStyle _applyUserStyle(String key, TextStyle base) {
+    final rawStyles = userData?['styles'];
+    if (rawStyles is Map) {
+      final entry = rawStyles[key];
+      if (entry is Map) {
+        TextStyle s = base;
+        final fontVal = entry['font'];
+        final colorVal = entry['color'];
+        if (fontVal is String && fontVal.isNotEmpty) {
+          try { s = GoogleFonts.getFont(fontVal, textStyle: s); } catch (_) {}
+        }
+        if (colorVal is String && colorVal.isNotEmpty) {
+          final c = _colorFromHex(colorVal);
+          if (c != null) s = s.copyWith(color: c);
+        }
+        return s;
+      }
+    }
+    return base;
+  }
+
+  Color? _colorFromHex(String hex) {
+    try {
+      var h = hex.replaceAll('#', '');
+      if (h.length == 6) {
+        return Color(int.parse('FF$h', radix: 16));
+      } else if (h.length == 8) {
+        return Color(int.parse(h, radix: 16));
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String _hexFromColor(Color c) {
+    return '#${c.value.toRadixString(16).padLeft(8, '0').substring(2)}';
+  }
+
+  bool _isHttpUrl(String? s) {
+    if (s == null) return false;
+    final l = s.toLowerCase();
+    return l.startsWith('http://') || l.startsWith('https://');
+  }
+
+  Future<void> _saveStyle(String key, {String? font, Color? color}) async {
+    final User? user = _auth.currentUser;
+    if (user == null) return;
+    // Safely build styles map
+    final Map<String, dynamic> styles = {};
+    final rawStyles = userData?['styles'];
+    if (rawStyles is Map) {
+      rawStyles.forEach((k, v) { styles[k.toString()] = v; });
+    }
+    // Current entry
+    final Map<String, dynamic> entry = {};
+    final prev = styles[key];
+    if (prev is Map) {
+      prev.forEach((ek, ev) { entry[ek.toString()] = ev; });
+    }
+    if (font != null) entry['font'] = font;
+    if (color != null) entry['color'] = _hexFromColor(color);
+    styles[key] = entry;
+    await _firestore.collection('users').doc(user.uid).set({'styles': styles}, SetOptions(merge: true));
+    if (!mounted) return;
+    setState(() {
+      userData ??= {};
+      userData!['styles'] = styles;
+    });
+  }
+
+  void _showStylePicker(String key) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        // Read current selections safely
+        String selectedFont = '';
+        Color? selectedColor;
+        final rawStyles = userData?['styles'];
+        if (rawStyles is Map) {
+          final entry = rawStyles[key];
+          if (entry is Map) {
+            final f = entry['font'];
+            final hx = entry['color'];
+            if (f is String) selectedFont = f;
+            if (hx is String) selectedColor = _colorFromHex(hx);
+          }
+        }
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Pick Color', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _styleColors.map((c) {
+                    final sel = selectedColor == c;
+                    return GestureDetector(
+                      onTap: () {
+                        selectedColor = c;
+                        _saveStyle(key, color: c);
+                        Navigator.pop(ctx);
+                      },
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: c,
+                          border: sel ? Border.all(color: Colors.black, width: 2) : null,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+                const Text('Pick Font', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 200,
+                  child: ListView.builder(
+                    itemCount: _styleFonts.length,
+                    itemBuilder: (_, i) {
+                      final f = _styleFonts[i];
+                      final sel = selectedFont == f;
+                      return ListTile(
+                        title: Text('Aa Bb Cc 123', style: GoogleFonts.getFont(f, textStyle: const TextStyle(fontSize: 18))),
+                        subtitle: Text(f),
+                        trailing: sel ? const Icon(Icons.check, color: Colors.green) : null,
+                        onTap: () {
+                          _saveStyle(key, font: f);
+                          Navigator.pop(ctx);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _styleableText({required String key, required String text, required TextStyle base, TextAlign? align}) {
+    void startTimer() {
+      _longPressTimer?.cancel();
+      _longPressTimer = Timer(const Duration(seconds: 2), () {
+        _showStylePicker(key);
+      });
+    }
+
+    void cancelTimer() {
+      _longPressTimer?.cancel();
+    }
+
+    return GestureDetector(
+      onTapDown: (_) => startTimer(),
+      onTapUp: (_) => cancelTimer(),
+      onTapCancel: () => cancelTimer(),
+      child: Text(
+        text,
+        style: _applyUserStyle(key, base),
+        textAlign: align,
+      ),
+    );
+  }
+
   Future<void> _deletePost(String postId) async {
     try {
       await _firestore.collection('posts').doc(postId).delete();
@@ -1058,6 +1263,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // for AutomaticKeepAliveClientMixin
     final user = _auth.currentUser;
     
     return Scaffold(
@@ -1076,7 +1282,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 accountEmail: Text((userData?['email'] ?? user?.email ?? '') as String),
                 currentAccountPicture: CircleAvatar(
                   backgroundColor: Colors.white,
-                  backgroundImage: (userData?['profile_image'] != null && (userData?['profile_image'] as String).isNotEmpty)
+                  backgroundImage: (_isHttpUrl(userData?['profile_image'] as String?))
                       ? CachedNetworkImageProvider(userData!['profile_image'] as String)
                       : null,
                   child: (userData?['profile_image'] == null || (userData?['profile_image'] as String).isEmpty)
@@ -1139,6 +1345,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 await _fetchInitialUserPosts();
               },
               child: SingleChildScrollView(
+                restorationId: 'home_scroll',
+                key: const PageStorageKey('home_scroll'),
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1164,15 +1372,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             ),
                             child: Stack(
                               children: [
-                                CircleAvatar(
-                                  radius: 70,
-                                  backgroundColor: Colors.grey[300],
-                                  backgroundImage: userData?['profile_image'] != null
-                                      ? CachedNetworkImageProvider(userData!['profile_image']) as ImageProvider
-                                      : null,
-                                  child: userData?['profile_image'] == null
-                                      ? const Icon(Icons.person, size: 60, color: Colors.grey)
-                                      : null,
+                                GestureDetector(
+                                  onTap: () {
+                                    final String? url = userData?['profile_image'] as String?;
+                                    if (!_isHttpUrl(url)) return;
+                                    showDialog(
+                                      context: context,
+                                      builder: (_) => Dialog(
+                                        insetPadding: const EdgeInsets.all(16),
+                                        backgroundColor: Colors.black,
+                                        child: InteractiveViewer(
+                                          panEnabled: true,
+                                          minScale: 0.5,
+                                          maxScale: 4,
+                                          child: CachedNetworkImage(
+                                            imageUrl: url!,
+                                            placeholder: (c, _) => const SizedBox(
+                                              height: 300,
+                                              child: Center(child: CircularProgressIndicator(color: Colors.white)),
+                                            ),
+                                            errorWidget: (c, _, __) => const Icon(Icons.error, color: Colors.white),
+                                            fit: BoxFit.contain,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: CircleAvatar(
+                                    radius: 70,
+                                    backgroundColor: Colors.grey[300],
+                                    backgroundImage: _isHttpUrl(userData?['profile_image'] as String?)
+                                        ? CachedNetworkImageProvider(userData!['profile_image']) as ImageProvider
+                                        : null,
+                                    child: !_isHttpUrl(userData?['profile_image'] as String?)
+                                        ? const Icon(Icons.person, size: 60, color: Colors.grey)
+                                        : null,
+                                  ),
                                 ),
                                 if (isUploading)
                                   Positioned.fill(
@@ -1201,13 +1436,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                 onPressed: () {
                                   Navigator.push(
                                     context,
-                                    MaterialPageRoute(builder: (_) => const NewsfeedPage()),
-                                  ).then((_) {
-                                    _fetchInitialUserPosts();
-                                  });
+                                    MaterialPageRoute(builder: (_) => const NotebookListPage()),
+                                  );
                                 },
-                                icon: const Icon(Icons.feed, size: 18),
-                                label: const Text('Newsfeed'),
+                                icon: const Icon(Icons.note, size: 18),
+                                label: const Text('Notebook'),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.blue,
                                   foregroundColor: Colors.white,
@@ -1240,26 +1473,28 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           
                           SlideTransition(
                             position: _slideAnimation,
-                            child: Text(
-                              userData?['name'] ?? 'No Name Provided',
-                              style: const TextStyle(
+                            child: _styleableText(
+                              key: 'name_text',
+                              text: userData?['name'] ?? 'No Name Provided',
+                              base: const TextStyle(
                                 fontSize: 28,
                                 fontWeight: FontWeight.bold,
                                 color: Color.fromARGB(255, 226, 146, 146),
                               ),
-                              textAlign: TextAlign.center,
+                              align: TextAlign.center,
                             ),
                           ),
                           
                           const SizedBox(height: 8),
                           
-                          Text(
-                            userData?['email'] ?? 'No Email Provided',
-                            style: const TextStyle(
+                          _styleableText(
+                            key: 'email_text',
+                            text: userData?['email'] ?? 'No Email Provided',
+                            base: const TextStyle(
                               fontSize: 17,
                               color: Color.fromARGB(255, 60, 14, 14),
                             ),
-                            textAlign: TextAlign.center,
+                            align: TextAlign.center,
                           ),
                         ],
                       ),
@@ -1323,12 +1558,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Widget _buildSectionHeader(String title) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16.0),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-          color: Colors.blue,
+      child: GestureDetector(
+        onTapDown: (_) {
+          _longPressTimer?.cancel();
+          _longPressTimer = Timer(const Duration(seconds: 2), () => _showStylePicker('section_$title'));
+        },
+        onTapUp: (_) => _longPressTimer?.cancel(),
+        onTapCancel: () => _longPressTimer?.cancel(),
+        child: Text(
+          title,
+          style: _applyUserStyle(
+            'section_$title',
+            const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.blue,
+            ),
+          ),
         ),
       ),
     );
@@ -1342,9 +1588,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         children: [
           SizedBox(
             width: 120,
-            child: Text(
-              '$label:',
-              style: const TextStyle(fontWeight: FontWeight.bold),
+            child: GestureDetector(
+              onTapDown: (_) {
+                _longPressTimer?.cancel();
+                _longPressTimer = Timer(const Duration(seconds: 2), () => _showStylePicker('label_${label.toLowerCase()}'));
+              },
+              onTapUp: (_) => _longPressTimer?.cancel(),
+              onTapCancel: () => _longPressTimer?.cancel(),
+              child: Text(
+                '$label:',
+                style: _applyUserStyle('label_${label.toLowerCase()}', const TextStyle(fontWeight: FontWeight.bold)),
+              ),
             ),
           ),
           Expanded(
@@ -1370,9 +1624,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         children: [
           SizedBox(
             width: 120,
-            child: Text(
-              '$label:',
-              style: const TextStyle(fontWeight: FontWeight.bold),
+            child: GestureDetector(
+              onTapDown: (_) {
+                _longPressTimer?.cancel();
+                _longPressTimer = Timer(const Duration(seconds: 2), () => _showStylePicker('label_${label.toLowerCase()}'));
+              },
+              onTapUp: (_) => _longPressTimer?.cancel(),
+              onTapCancel: () => _longPressTimer?.cancel(),
+              child: Text(
+                '$label:',
+                style: _applyUserStyle('label_${label.toLowerCase()}', const TextStyle(fontWeight: FontWeight.bold)),
+              ),
             ),
           ),
           Expanded(
@@ -1665,10 +1927,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               CircleAvatar(
                 radius: 15,
                 backgroundColor: Colors.grey[300],
-                backgroundImage: comment['user_data']?['profile_image'] != null
+                backgroundImage: _isHttpUrl(comment['user_data']?['profile_image'] as String?)
                     ? CachedNetworkImageProvider(comment['user_data']['profile_image'])
                     : null,
-                child: comment['user_data']?['profile_image'] == null
+                child: !_isHttpUrl(comment['user_data']?['profile_image'] as String?)
                     ? const Icon(Icons.person, size: 15, color: Colors.grey)
                     : null,
               ),
@@ -1735,4 +1997,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
     );
   }
+
+  @override
+  bool get wantKeepAlive => true;
 }

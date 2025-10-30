@@ -43,7 +43,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             val channel = NotificationChannel(
                 channelId,
                 "Messages",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 channel.setAllowBubbles(true)
@@ -53,14 +53,24 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
         val person = Person.Builder().setName(otherName).build()
 
+        // Increment badge count
+        val prefs = getSharedPreferences("app_badge", Context.MODE_PRIVATE)
+        val newCount = (prefs.getInt("unread", 0) + 1).coerceAtMost(999)
+        prefs.edit().putInt("unread", newCount).apply()
+
         val builder = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.drawable.ic_notification)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .addPerson(person)
+            .setNumber(newCount)
+            .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setDefaults(android.app.Notification.DEFAULT_ALL)
         if (conversationId != null) {
             builder.setShortcutId(conversationId)
         }
@@ -81,7 +91,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 else PendingIntent.FLAG_UPDATE_CURRENT
             )
-            val icon = IconCompat.createWithResource(this, R.drawable.ic_notification)
+            val icon = IconCompat.createWithResource(this, R.mipmap.ic_launcher)
             val bubble = NotificationCompat.BubbleMetadata.Builder(bubblePendingIntent, icon)
                 .setAutoExpandBubble(true)
                 .setSuppressNotification(false)

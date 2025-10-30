@@ -216,3 +216,20 @@ Future<String> uploadMessageImageBytes(Uint8List data, {String? fileName, String
 Future<String> uploadMessageVideoBytes(Uint8List data, {String? fileName, String? contentType}) async {
   return uploadImageData(data, fileName: fileName, folder: 'message-videos', contentType: contentType);
 }
+
+/// Notebook-specific uploads
+Future<String> uploadNotebookImage(File imageFile, {String? fileName}) async {
+  return uploadImage(imageFile, fileName: fileName, folder: 'notebook-images');
+}
+
+Future<String> uploadNotebookVideo(File videoFile, {String? fileName}) async {
+  return uploadImage(videoFile, fileName: fileName, folder: 'notebook-videos');
+}
+
+Future<String> uploadNotebookImageBytes(Uint8List data, {String? fileName, String? contentType}) async {
+  return uploadImageData(data, fileName: fileName, folder: 'notebook-images', contentType: contentType);
+}
+
+Future<String> uploadNotebookVideoBytes(Uint8List data, {String? fileName, String? contentType}) async {
+  return uploadImageData(data, fileName: fileName, folder: 'notebook-videos', contentType: contentType);
+}

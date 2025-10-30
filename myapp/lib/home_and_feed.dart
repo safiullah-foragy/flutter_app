@@ -12,8 +12,16 @@ class HomeAndFeedPage extends StatefulWidget {
   State<HomeAndFeedPage> createState() => _HomeAndFeedPageState();
 }
 
-class _HomeAndFeedPageState extends State<HomeAndFeedPage> {
-  int _currentIndex = 0;
+class _HomeAndFeedPageState extends State<HomeAndFeedPage> with RestorationMixin {
+  final RestorableInt _currentIndex = RestorableInt(0);
+
+  @override
+  String? get restorationId => 'home_and_feed';
+
+  @override
+  void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
+    registerForRestoration(_currentIndex, 'tab_index');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,10 +33,10 @@ class _HomeAndFeedPageState extends State<HomeAndFeedPage> {
     ];
 
     return Scaffold(
-      body: IndexedStack(index: _currentIndex, children: pages),
+      body: IndexedStack(index: _currentIndex.value, children: pages),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (i) => setState(() => _currentIndex = i),
+        currentIndex: _currentIndex.value,
+        onTap: (i) => setState(() => _currentIndex.value = i),
         items: [
           const BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),

@@ -17,6 +17,7 @@ import 'videos.dart';
 import 'messages.dart';
 import 'jobs.dart';
 import 'app_cache_manager.dart';
+import 'background_tasks.dart';
 import 'notifications.dart';
 
 class NewsfeedPage extends StatefulWidget {
@@ -26,7 +27,7 @@ class NewsfeedPage extends StatefulWidget {
   State<NewsfeedPage> createState() => _NewsfeedPageState();
 }
 
-class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMixin {
+class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   final firebase_auth.FirebaseAuth _auth = firebase_auth.FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final ImagePicker _imagePicker = ImagePicker();
@@ -35,7 +36,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   // per-post comment controllers to avoid sharing a single controller across posts
   Map<String, TextEditingController> perPostCommentControllers = {};
   final Connectivity _connectivity = Connectivity();
-  final ScrollController _scrollController = ScrollController();
+  // Preserve scroll position across tab switches and app backgrounding via PageStorage
+  // (ListView will use a PageStorageKey; no explicit controller needed.)
 
   File? _selectedImage;
   File? _selectedVideo;
@@ -73,6 +75,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   bool isLoading = true;
   bool hasConnection = true;
   bool _showComposer = true;
+  bool _didInitialLoad = false;
 
   @override
   void initState() {
@@ -91,6 +94,18 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       });
       if (!hasConnection) {
         Fluttertoast.showToast(msg: 'No internet connection. Showing cached data if available.');
+      } else {
+        // When back online, flush queued background actions (likes/comments/uploads etc.)
+        // ignore: unawaited_futures
+        BackgroundTasks.flushPending();
+        // Avoid reloading the whole feed if we already have data; live snapshots will reconcile.
+        // Only fetch if nothing has been loaded yet (e.g., cold start while offline).
+        if (posts.isEmpty && !_didInitialLoad) {
+          // ignore: unawaited_futures
+          _fetchUserData();
+          // ignore: unawaited_futures
+          _fetchInitialPosts();
+        }
       }
     });
   }
@@ -110,7 +125,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     authorSubscriptions.forEach((_, sub) => sub?.cancel());
     _currentUserSubscription?.cancel();
     _connectivitySubscription?.cancel();
-    _scrollController.dispose();
     super.dispose();
   }
 
@@ -299,6 +313,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         posts = postsList;
         isLoading = false;
       });
+      _didInitialLoad = true;
       // Clean up like listeners for posts no longer present
       final currentIds = postsList.map((p) => p['id'] as String).toSet();
       final toRemove = likeSubscriptions.keys.where((k) => !currentIds.contains(k)).toList();
@@ -1174,6 +1189,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // for AutomaticKeepAliveClientMixin
     return PopScope(
       canPop: true,
       child: Scaffold(
@@ -1228,10 +1244,55 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
               icon: Icon(_showComposer ? Icons.expand_less : Icons.expand_more),
               onPressed: () => setState(() => _showComposer = !_showComposer),
             ),
-            IconButton(
-              tooltip: 'Messages',
-              icon: const Icon(Icons.message),
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MessagesPage())),
+            // Messages icon with unread conversations badge
+            StreamBuilder<QuerySnapshot>(
+              stream: (_auth.currentUser == null)
+                  ? const Stream.empty()
+                  : _firestore
+                      .collection('conversations')
+                      .where('participants', arrayContains: _auth.currentUser!.uid)
+                      .snapshots(includeMetadataChanges: true),
+              builder: (context, snap) {
+                int unreadConversations = 0;
+                if (snap.hasData) {
+                  final uid = _auth.currentUser?.uid;
+                  for (final d in snap.data!.docs) {
+                    final data = d.data() as Map<String, dynamic>? ?? {};
+                    final lastUpdated = (data['last_updated'] ?? 0) as int;
+                    final lastReadMap = Map<String, dynamic>.from(data['last_read'] ?? <String, dynamic>{});
+                    final lastRead = (uid != null) ? (lastReadMap[uid] ?? 0) as int : 0;
+                    if (lastUpdated > lastRead) unreadConversations++;
+                  }
+                }
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    IconButton(
+                      tooltip: 'Messages',
+                      icon: const Icon(Icons.message),
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MessagesPage())),
+                    ),
+                    if (unreadConversations > 0)
+                      Positioned(
+                        right: 8,
+                        top: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Text(
+                            unreadConversations > 99 ? '99+' : '$unreadConversations',
+                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
             IconButton(
               tooltip: 'Videos',
@@ -1369,7 +1430,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   : posts.isEmpty
                       ? const Center(child: Text('No posts available'))
                       : ListView.builder(
-                          controller: _scrollController,
+                          restorationId: 'newsfeed_list',
+                          key: const PageStorageKey('newsfeed_list'),
                           itemCount: posts.length,
                           itemBuilder: (context, index) {
                             final post = posts[index];
@@ -1794,4 +1856,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       ),
     );
   }
+
+  @override
+  bool get wantKeepAlive => true;
 }
