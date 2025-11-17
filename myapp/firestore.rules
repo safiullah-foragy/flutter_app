@@ -111,14 +111,25 @@ service cloud.firestore {
         // Create by sender who is a participant
         allow create: if isMsgParticipant()
                       && request.resource.data.sender_id == request.auth.uid
-                      && request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited']);
+                      // Allow basic message fields + optional uploading flag and optional call_channel for call invites
+                      && (
+                        // Normal/file/voice messages (may include 'uploading' placeholder)
+                        request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited','uploading'])
+                        ||
+                        // Call invite messages include call_channel along with standard fields
+                        request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited','call_channel'])
+                      );
 
         // Update:
         // - Any participant may update reactions only
         // - Sender may edit text/edited (and reactions)
+        // - Sender may update file_url and uploading when background upload completes
         allow update: if isMsgParticipant() && (
                         request.resource.data.diff(resource.data).changedKeys().hasOnly(['reactions']) ||
-                        (resource.data.sender_id == request.auth.uid && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','edited','reactions']))
+                        (
+                          resource.data.sender_id == request.auth.uid &&
+                          request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','edited','reactions','file_url','uploading'])
+                        )
                       );
         // Delete by sender only
         allow delete: if isMsgParticipant() && resource.data.sender_id == request.auth.uid;
@@ -177,6 +188,45 @@ service cloud.firestore {
                           || (resource.data.type in ['image','video'] && request.resource.data == resource.data));
         allow delete: if isParentOwner();
       }
+    }
+
+    // CALL SESSIONS (direct call signaling)
+    match /call_sessions/{sessionId} {
+      function isParticipant() { return signedIn() && (resource.data.caller_id == request.auth.uid || resource.data.callee_id == request.auth.uid); }
+      function isParticipantReq() { return signedIn() && (request.resource.data.caller_id == request.auth.uid || request.resource.data.callee_id == request.auth.uid); }
+
+      // Create: caller creates a ringing session
+      allow create: if signedIn()
+                    && request.resource.data.caller_id == request.auth.uid
+                    && request.resource.data.keys().hasOnly(['channel','caller_id','callee_id','video','status','created_at','accepted_at','ended_at'])
+                    && request.resource.data.status == 'ringing'
+                    && request.resource.data.accepted_at == null
+                    && request.resource.data.ended_at == null;
+
+      // Read: participants only
+      allow read: if isParticipant();
+
+      // Update: participants can update status lifecycle (accepted / ended)
+      allow update: if isParticipant()
+                    && request.resource.data.caller_id == resource.data.caller_id
+                    && request.resource.data.callee_id == resource.data.callee_id
+                    && request.resource.data.channel == resource.data.channel
+                    && request.resource.data.video == resource.data.video
+                    && request.resource.data.created_at == resource.data.created_at
+                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','accepted_at','ended_at'])
+                    && (
+                      // Accept
+                      (request.resource.data.status == 'accepted' && request.resource.data.accepted_at is int && resource.data.status == 'ringing')
+                      ||
+                      // End
+                      (request.resource.data.status == 'ended' && request.resource.data.ended_at is int)
+                      ||
+                      // Ringing -> ended (missed)
+                      (request.resource.data.status == 'missed' && request.resource.data.ended_at is int && resource.data.status == 'ringing')
+                    );
+
+      // Delete: either participant can delete session record afterwards
+      allow delete: if isParticipant();
     }
 
     // Deny everything else by default

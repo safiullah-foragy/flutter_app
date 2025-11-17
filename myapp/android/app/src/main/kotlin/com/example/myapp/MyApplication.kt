@@ -28,13 +28,22 @@ class MyApplication : Application() {
             } catch (_: Throwable) {}
         }
         try {
-            val engine = FlutterEngine(this)
-            GeneratedPluginRegistrant.registerWith(engine)
+            // If an engine is already cached, don't create another
+            val cache = FlutterEngineCache.getInstance()
+            val existing = cache.get("warm_engine")
+            if (existing == null) {
+                val engine = FlutterEngine(this)
+                // Plugins will be auto-registered by Flutter when activity attaches if needed.
+                // Avoid manual double registration; GeneratedPluginRegistrant is optional with new embedding.
+                try {
+                    GeneratedPluginRegistrant.registerWith(engine)
+                } catch (_: Throwable) {}
             // Start Dart isolate now so it's warm when Activity attaches
-            engine.dartExecutor.executeDartEntrypoint(
-                DartExecutor.DartEntrypoint.createDefault()
-            )
-            FlutterEngineCache.getInstance().put("warm_engine", engine)
+                engine.dartExecutor.executeDartEntrypoint(
+                    DartExecutor.DartEntrypoint.createDefault()
+                )
+                cache.put("warm_engine", engine)
+            }
         } catch (_: Throwable) {
             // Best-effort; app still works without cached engine
         }

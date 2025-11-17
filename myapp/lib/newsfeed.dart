@@ -1204,7 +1204,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   ? const Stream.empty()
                   : _firestore
                       .collection('notifications')
-                      .where('to', isEqualTo: _auth.currentUser!.uid)
+                      .where('to', isEqualTo: _auth.currentUser?.uid ?? '')
                       .where('read', isEqualTo: false)
                       .snapshots(),
               builder: (context, snap) {
@@ -1250,7 +1250,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   ? const Stream.empty()
                   : _firestore
                       .collection('conversations')
-                      .where('participants', arrayContains: _auth.currentUser!.uid)
+                      .where('participants', arrayContains: _auth.currentUser?.uid ?? '')
                       .snapshots(includeMetadataChanges: true),
               builder: (context, snap) {
                 int unreadConversations = 0;
@@ -1322,7 +1322,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) => SeeProfileFromNewsfeed(userId: _auth.currentUser!.uid),
+                                builder: (context) => SeeProfileFromNewsfeed(userId: _auth.currentUser?.uid ?? ''),
                               ),
                             );
                           }

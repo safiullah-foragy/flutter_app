@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'agora_call_page.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -352,6 +353,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   static const MethodChannel _navChannel = MethodChannel('com.example.myapp/navigation');
   static const MethodChannel _appChannel = MethodChannel('com.example.myapp/app');
   StreamSubscription<firebase_auth.User?>? _authSub;
+  StreamSubscription<QuerySnapshot>? _callSessionSub;
   @override
   void initState() {
     super.initState();
@@ -372,6 +374,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         final topic = 'user_' + u.uid;
         try { await FirebaseMessaging.instance.subscribeToTopic(topic); } catch (_) {}
         await prefs.setString('last_topic_uid', u.uid);
+        _attachCallSessionListener(u.uid);
       } else {
         // On sign out, best-effort unsubscribe from previous topic
         if (lastUid != null && lastUid.isNotEmpty) {
@@ -380,6 +383,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         }
         // Stop background watcher if running
         _stopMessageWatcher();
+        _detachCallSessionListener();
       }
     });
     // Listen for navigation requests from Android native (notification taps)
@@ -413,6 +417,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   @override
   void dispose() {
     _authSub?.cancel();
+    _detachCallSessionListener();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -439,6 +444,115 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     try {
       await _appChannel.invokeMethod('stopMessageWatcher');
     } catch (_) {}
+  }
+
+  void _attachCallSessionListener(String uid) {
+    _callSessionSub?.cancel();
+    _callSessionSub = FirebaseFirestore.instance
+        .collection('call_sessions')
+        .where('callee_id', isEqualTo: uid)
+        .where('status', isEqualTo: 'ringing')
+        .snapshots()
+        .listen((snap) {
+      if (snap.docs.isEmpty) return;
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final channel = data['channel'] as String? ?? '';
+        final callerId = data['caller_id'] as String? ?? '';
+        final video = data['video'] == true;
+        if (channel.isEmpty || callerId.isEmpty) continue;
+        _showIncomingCallGlobal(doc.reference, callerId, channel, video);
+      }
+    });
+  }
+
+  void _detachCallSessionListener() {
+    _callSessionSub?.cancel();
+    _callSessionSub = null;
+  }
+
+  bool _showingGlobalCall = false;
+  Future<void> _showIncomingCallGlobal(DocumentReference ref, String callerId, String channel, bool video) async {
+    if (_showingGlobalCall || !mounted) return;
+    _showingGlobalCall = true;
+    // Load caller profile
+    Map<String, dynamic>? user;
+    try {
+      final udoc = await FirebaseFirestore.instance.collection('users').doc(callerId).get();
+      if (udoc.exists) user = udoc.data();
+    } catch (_) {}
+    final name = user?['name'] ?? callerId;
+    final avatarUrl = user?['profile_image'];
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          backgroundColor: Colors.black87,
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 48,
+                  backgroundColor: Colors.blueGrey,
+                  backgroundImage: (avatarUrl is String && avatarUrl.isNotEmpty) ? NetworkImage(avatarUrl) : null,
+                  child: (avatarUrl is String && avatarUrl.isNotEmpty) ? null : Text(name[0].toUpperCase(), style: const TextStyle(fontSize: 32, color: Colors.white)),
+                ),
+                const SizedBox(height: 16),
+                Text('${video ? 'Video' : 'Audio'} call from', style: const TextStyle(color: Colors.white70)),
+                const SizedBox(height: 8),
+                Text(name, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                      onPressed: () async {
+                        try { await ref.update({'status': 'ended', 'ended_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
+                        Navigator.pop(c);
+                      },
+                      icon: const Icon(Icons.call_end),
+                      label: const Text('Decline'),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                      onPressed: () async {
+                        try { await ref.update({'status': 'accepted', 'accepted_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
+                        Navigator.pop(c);
+                        // Derive conversation id
+                        final convId = await _findConversationWith(callerId);
+                        // Start call page directly
+                        _MyAppNavigator.navigatorKey.currentState?.push(CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId));
+                      },
+                      icon: Icon(video ? Icons.videocam : Icons.call),
+                      label: const Text('Accept'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    _showingGlobalCall = false;
+  }
+
+  Future<String?> _findConversationWith(String otherId) async {
+    final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return null;
+    try {
+      final snap = await FirebaseFirestore.instance.collection('conversations').where('participants', arrayContains: uid).get();
+      for (final d in snap.docs) {
+        final parts = List<String>.from(d.data()['participants'] ?? []);
+        if (parts.contains(otherId)) return d.id;
+      }
+    } catch (_) {}
+    return null;
   }
 
   @override

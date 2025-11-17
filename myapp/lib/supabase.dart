@@ -29,13 +29,19 @@ Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'p
     // Prefer the extension of the final upload name (if supplied) so headers match the stored name
     final String ext = p.extension(finalFileName.isNotEmpty ? finalFileName : imageFile.path).toLowerCase();
     String? contentType;
-    if (ext == '.jpg' || ext == '.jpeg') contentType = 'image/jpeg';
-    else if (ext == '.png') contentType = 'image/png';
-    else if (ext == '.gif') contentType = 'image/gif';
-    else if (ext == '.webp') contentType = 'image/webp';
-    else if (ext == '.mp4') contentType = 'video/mp4';
-    else if (ext == '.mov') contentType = 'video/quicktime';
-    else if (ext == '.mkv') contentType = 'video/x-matroska';
+  if (ext == '.jpg' || ext == '.jpeg') contentType = 'image/jpeg';
+  else if (ext == '.png') contentType = 'image/png';
+  else if (ext == '.gif') contentType = 'image/gif';
+  else if (ext == '.webp') contentType = 'image/webp';
+  else if (ext == '.mp4') contentType = 'video/mp4';
+  else if (ext == '.mov') contentType = 'video/quicktime';
+  else if (ext == '.mkv') contentType = 'video/x-matroska';
+  else if (ext == '.mp3') contentType = 'audio/mpeg';
+  else if (ext == '.m4a') contentType = 'audio/mp4';
+  else if (ext == '.aac') contentType = 'audio/aac';
+  else if (ext == '.wav') contentType = 'audio/wav';
+  else if (ext == '.ogg') contentType = 'audio/ogg';
+  else if (ext == '.opus') contentType = 'audio/opus';
 
     // Try upload with upsert true so retries won't fail on duplicates.
     // On web, prefer the bytes-based path instead of dart:io File
@@ -82,6 +88,11 @@ Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'p
     return publicUrl;
   } catch (e) {
     print('Error uploading to Supabase (exception): $e');
+    // Detect common StorageException shape from supabase client
+    final msg = e.toString();
+      if (msg.contains('Bucket not found') || msg.contains('statusCode: 404')) {
+        throw Exception('Failed to upload: Supabase bucket "$folder" not found (404). Please verify the bucket exists in Supabase Storage -> Buckets, and ensure the anon key in SupabaseConfig.supabaseAnonKey has storage access. If you intended a different bucket name, update the bucket name in the upload helper or SupabaseBuckets.');
+    }
     throw Exception('Failed to upload image: $e');
   }
 }
@@ -149,13 +160,19 @@ Future<String> uploadImageData(
     final String ext = p.extension(finalFileName).toLowerCase();
     String? ct = contentType;
     if (ct == null || ct.isEmpty) {
-      if (ext == '.jpg' || ext == '.jpeg') ct = 'image/jpeg';
-      else if (ext == '.png') ct = 'image/png';
-      else if (ext == '.gif') ct = 'image/gif';
-      else if (ext == '.webp') ct = 'image/webp';
-      else if (ext == '.mp4') ct = 'video/mp4';
-      else if (ext == '.mov') ct = 'video/quicktime';
-      else if (ext == '.mkv') ct = 'video/x-matroska';
+  if (ext == '.jpg' || ext == '.jpeg') ct = 'image/jpeg';
+  else if (ext == '.png') ct = 'image/png';
+  else if (ext == '.gif') ct = 'image/gif';
+  else if (ext == '.webp') ct = 'image/webp';
+  else if (ext == '.mp4') ct = 'video/mp4';
+  else if (ext == '.mov') ct = 'video/quicktime';
+  else if (ext == '.mkv') ct = 'video/x-matroska';
+  else if (ext == '.mp3') ct = 'audio/mpeg';
+  else if (ext == '.m4a') ct = 'audio/mp4';
+  else if (ext == '.aac') ct = 'audio/aac';
+  else if (ext == '.wav') ct = 'audio/wav';
+  else if (ext == '.ogg') ct = 'audio/ogg';
+  else if (ext == '.opus') ct = 'audio/opus';
       else ct = 'application/octet-stream';
     }
 
@@ -208,6 +225,11 @@ Future<String> uploadMessageVideo(File videoFile, {String? fileName}) async {
   return uploadImage(videoFile, fileName: fileName, folder: 'message-videos');
 }
 
+/// Upload audio intended for messages (public folder `message-audio`).
+Future<String> uploadMessageAudio(File audioFile, {String? fileName}) async {
+  return uploadImage(audioFile, fileName: fileName, folder: 'message-audio');
+}
+
 /// Bytes-based wrappers for messages
 Future<String> uploadMessageImageBytes(Uint8List data, {String? fileName, String? contentType}) async {
   return uploadImageData(data, fileName: fileName, folder: 'message-images', contentType: contentType);
@@ -215,6 +237,10 @@ Future<String> uploadMessageImageBytes(Uint8List data, {String? fileName, String
 
 Future<String> uploadMessageVideoBytes(Uint8List data, {String? fileName, String? contentType}) async {
   return uploadImageData(data, fileName: fileName, folder: 'message-videos', contentType: contentType);
+}
+
+Future<String> uploadMessageAudioBytes(Uint8List data, {String? fileName, String? contentType}) async {
+  return uploadImageData(data, fileName: fileName, folder: 'message-audio', contentType: contentType);
 }
 
 /// Notebook-specific uploads

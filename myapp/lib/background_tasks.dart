@@ -110,6 +110,7 @@ Future<bool> _handleAction(String? type, Map<String, dynamic> map) async {
   switch (type) {
     case 'upload_message_image':
     case 'upload_message_video':
+    case 'upload_message_audio':
       return _handleQueuedMediaUpload(type!, map);
     default:
       return false;
@@ -132,8 +133,10 @@ Future<bool> _handleQueuedMediaUpload(String type, Map<String, dynamic> map) asy
     String url;
     if (type == 'upload_message_image') {
       url = await sb.uploadMessageImage(file);
-    } else {
+    } else if (type == 'upload_message_video') {
       url = await sb.uploadMessageVideo(file);
+    } else {
+      url = await sb.uploadMessageAudio(file);
     }
 
     // Update the placeholder message with the URL
@@ -150,7 +153,10 @@ Future<bool> _handleQueuedMediaUpload(String type, Map<String, dynamic> map) asy
 
     // Bump conversation last_message/last_updated
     final lastUpdated = DateTime.now().millisecondsSinceEpoch;
-    final lastMessageText = (type == 'upload_message_image') ? '[Image]' : '[Video]';
+  String lastMessageText = '[File]';
+  if (type == 'upload_message_image') lastMessageText = '[Image]';
+  else if (type == 'upload_message_video') lastMessageText = '[Video]';
+  else if (type == 'upload_message_audio') lastMessageText = '[Voice]';
     await FirebaseFirestore.instance.collection('conversations').doc(conversationId).update({
       'last_message': lastMessageText,
       'last_updated': lastUpdated,

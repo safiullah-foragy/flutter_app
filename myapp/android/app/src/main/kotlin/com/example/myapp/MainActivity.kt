@@ -15,8 +15,9 @@ class MainActivity : FlutterActivity() {
 	private var appChannel: MethodChannel? = null
 
 	override fun provideFlutterEngine(context: Context): FlutterEngine? {
-		// Attach to the pre-warmed engine if available
-		return FlutterEngineCache.getInstance().get("warm_engine")
+		// Attach to the pre-warmed engine if available; otherwise return null
+		// to let Flutter create and register a new engine.
+		return FlutterEngineCache.getInstance().get("warm_engine") ?: super.provideFlutterEngine(context)
 	}
 
 	override fun shouldDestroyEngineWithHost(): Boolean {
@@ -25,7 +26,12 @@ class MainActivity : FlutterActivity() {
 	}
 
 	override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-		super.configureFlutterEngine(flutterEngine)
+		// If we're using the pre-warmed cached engine, plugins are already registered in MyApplication.
+		// Only call super.configureFlutterEngine for non-cached engines to avoid duplicate registrations.
+		val cached = FlutterEngineCache.getInstance().get("warm_engine")
+		if (cached !== flutterEngine) {
+			super.configureFlutterEngine(flutterEngine)
+		}
 		navChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.myapp/navigation")
 			appChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.myapp/app")
 			appChannel?.setMethodCallHandler { call, result ->
@@ -48,6 +54,25 @@ class MainActivity : FlutterActivity() {
 							result.success(null)
 						} catch (e: Throwable) {
 							result.error("STOP_FAIL", e.message, null)
+						}
+					}
+					"startCallForeground" -> {
+						try {
+							val title = (call.argument<String>("title")) ?: "Ongoing call"
+							val text = (call.argument<String>("text")) ?: ""
+							val video = (call.argument<Boolean>("video")) ?: false
+							CallForegroundService.start(this, title, text, video)
+							result.success(null)
+						} catch (e: Throwable) {
+							result.error("CALL_FG_START_FAIL", e.message, null)
+						}
+					}
+					"stopCallForeground" -> {
+						try {
+							CallForegroundService.stop(this)
+							result.success(null)
+						} catch (e: Throwable) {
+							result.error("CALL_FG_STOP_FAIL", e.message, null)
 						}
 					}
 					else -> result.notImplemented()
