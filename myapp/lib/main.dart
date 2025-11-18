@@ -18,6 +18,7 @@ import 'theme_controller.dart';
 import 'background_tasks.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'connectivity_service.dart';
+import 'notification_service.dart';
 
 import 'dart:async';
 import 'package:flutter/services.dart';
@@ -93,6 +94,8 @@ void main() {
     // Push notifications setup
     if (!kIsWeb) {
       FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+      // Initialize notification service
+      await NotificationService.instance.initialize();
       // Save FCM token ASAP if user is already signed in
       try {
         final u = firebase_auth.FirebaseAuth.instance.currentUser;
@@ -185,25 +188,39 @@ Future<void> _setupPushNotifications() async {
   );
   await _flnp.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(channel);
 
-  // Foreground messages → show local notification
+  // Foreground messages → show local notification with custom ringtone
   FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
     final n = message.notification;
     final data = message.data;
     if (n != null) {
       final convId = data['conversationId'] ?? '';
       final otherId = data['otherUserId'] ?? '';
-      final payload = convId.isNotEmpty || otherId.isNotEmpty
-          ? 'convId=' + convId + '&otherId=' + otherId
-          : '';
-      await _flnp.show(
-        n.hashCode,
-        n.title ?? 'New message',
-        n.body ?? '',
-        const NotificationDetails(
-          android: AndroidNotificationDetails('messages', 'Messages', importance: Importance.high, priority: Priority.high),
-        ),
-        payload: payload,
-      );
+      final type = data['type'] ?? 'message';
+      
+      if (type == 'call') {
+        // Incoming call - show call notification with ringtone
+        final channelName = data['channel'] ?? '';
+        final isVideo = data['video'] == 'true';
+        final sessionId = data['sessionId'] ?? '';
+        final callerName = n.title ?? 'Unknown';
+        
+        await NotificationService.instance.showCallNotification(
+          conversationId: convId,
+          otherUserId: otherId,
+          callerName: callerName,
+          channelName: channelName,
+          isVideo: isVideo,
+          sessionId: sessionId,
+        );
+      } else {
+        // Regular message - show message notification
+        await NotificationService.instance.showMessageNotification(
+          conversationId: convId,
+          otherUserId: otherId,
+          title: n.title ?? 'New message',
+          body: n.body ?? '',
+        );
+      }
     }
   });
 
@@ -395,6 +412,33 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
           _navigateToConversation(convId, '');
           _clearBadgeNative();
         }
+      } else if (call.method == 'openCall') {
+        final args = Map<String, dynamic>.from(call.arguments as Map);
+        final channel = args['channel'] as String?;
+        final callerId = args['callerId'] as String?;
+        final video = (args['video'] as bool?) ?? false;
+        final sessionId = args['sessionId'] as String?;
+        if (channel != null && channel.isNotEmpty && callerId != null && callerId.isNotEmpty) {
+          try {
+            // Try to find existing session id by querying call_sessions
+            String? sess = sessionId;
+            if (sess == null) {
+              try {
+                final snap = await FirebaseFirestore.instance
+                    .collection('call_sessions')
+                    .where('channel', isEqualTo: channel)
+                    .where('caller_id', isEqualTo: callerId)
+                    .limit(1)
+                    .get();
+                if (snap.docs.isNotEmpty) sess = snap.docs.first.id;
+              } catch (_) {}
+            }
+            final convId = await _findConversationWith(callerId);
+            _MyAppNavigator.navigatorKey.currentState?.push(
+              CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId, callSessionId: sess),
+            );
+          } catch (_) {}
+        }
       }
     });
   }
@@ -475,6 +519,44 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   Future<void> _showIncomingCallGlobal(DocumentReference ref, String callerId, String channel, bool video) async {
     if (_showingGlobalCall || !mounted) return;
     _showingGlobalCall = true;
+    
+    // Find conversation to get custom ringtone
+    final convId = await _findConversationWith(callerId);
+    
+    // Start playing ringtone
+    String ringtonePath = NotificationService.defaultCallRingtone;
+    if (convId != null) {
+      try {
+        final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+        if (uid != null) {
+          final doc = await FirebaseFirestore.instance.collection('conversations').doc(convId).get();
+          if (doc.exists) {
+            final data = doc.data() ?? {};
+            final settings = data['settings'] as Map<String, dynamic>? ?? {};
+            final userSettings = settings[uid] as Map<String, dynamic>? ?? {};
+            final isSilent = userSettings['call_ringtone_silent'] as bool? ?? false;
+            final customPath = userSettings['call_ringtone'] as String?;
+            
+            if (!isSilent) {
+              if (customPath != null && customPath.isNotEmpty) {
+                ringtonePath = customPath;
+              }
+              debugPrint('Starting call ringtone: $ringtonePath');
+              await NotificationService.instance.playCallRingtone(ringtonePath);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Error loading ringtone settings: $e');
+        // Play default ringtone on error
+        await NotificationService.instance.playCallRingtone(ringtonePath);
+      }
+    } else {
+      // No conversation found, play default
+      debugPrint('No conversation found, playing default ringtone');
+      await NotificationService.instance.playCallRingtone(ringtonePath);
+    }
+    
     // Load caller profile
     Map<String, dynamic>? user;
     try {
@@ -483,6 +565,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     } catch (_) {}
     final name = user?['name'] ?? callerId;
     final avatarUrl = user?['profile_image'];
+    
     await showDialog(
       context: context,
       barrierDismissible: false,
@@ -512,7 +595,9 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                       onPressed: () async {
-                        try { await ref.update({'status': 'ended', 'ended_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
+                        // Stop ringtone
+                        await NotificationService.instance.stopCallRingtone();
+                        try { await ref.update({'status': 'rejected', 'ended_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
                         Navigator.pop(c);
                       },
                       icon: const Icon(Icons.call_end),
@@ -521,12 +606,12 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                       onPressed: () async {
+                        // Stop ringtone
+                        await NotificationService.instance.stopCallRingtone();
                         try { await ref.update({'status': 'accepted', 'accepted_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
                         Navigator.pop(c);
-                        // Derive conversation id
-                        final convId = await _findConversationWith(callerId);
                         // Start call page directly
-                        _MyAppNavigator.navigatorKey.currentState?.push(CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId));
+                        _MyAppNavigator.navigatorKey.currentState?.push(CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId, callSessionId: ref.id));
                       },
                       icon: Icon(video ? Icons.videocam : Icons.call),
                       label: const Text('Accept'),
@@ -539,6 +624,9 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         );
       },
     );
+    
+    // Stop ringtone when dialog closes (in case user didn't press buttons)
+    await NotificationService.instance.stopCallRingtone();
     _showingGlobalCall = false;
   }
 

@@ -8,8 +8,8 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" android:minSdkVersion="33"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" android:minSdkVersion="33"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <!-- Android 13+ notifications permission -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Foreground service for background message watcher -->
@@ -20,6 +20,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <!-- Android 14+ foreground service type for data sync (optional but recommended) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- Full-screen call UI on lock screen -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
 
     <application
         android:label="myapp"
@@ -74,11 +76,19 @@
             android:name=".MessageWatcherService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Foreground service to play message ringtone while app is inactive -->
+        <service
+            android:name=".MessageSoundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
         <!-- Foreground service to keep call active when app in background -->
         <service
             android:name=".CallForegroundService"
             android:exported="false"
             android:foregroundServiceType="microphone|camera|mediaPlayback" />
+        <receiver
+            android:name=".CallActionReceiver"
+            android:exported="false"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

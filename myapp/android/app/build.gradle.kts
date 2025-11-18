@@ -31,7 +31,9 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        // Temporarily target Android 14 (SDK 34) to avoid Android 15's strict FGS permission requirements
+        // until runtime permission flow is fully tested
+        targetSdk = 34 // flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

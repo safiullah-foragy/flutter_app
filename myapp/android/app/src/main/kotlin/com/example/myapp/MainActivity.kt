@@ -102,6 +102,31 @@ class MainActivity : FlutterActivity() {
 			navChannel?.invokeMethod("openConversation", mapOf("conversationId" to conv))
 			intent?.removeExtra("conv")
 		}
+		maybeSendCall(intent)
+	}
+
+	private fun maybeSendCall(intent: Intent?) {
+		val channel = intent?.getStringExtra("call_channel")
+		val callerId = intent?.getStringExtra("caller_id")
+		val callerName = intent?.getStringExtra("caller_name")
+		val video = intent?.getBooleanExtra("video", false) ?: false
+		val sessionId = intent?.getStringExtra("call_session_id")
+		if (!channel.isNullOrEmpty() && !callerId.isNullOrEmpty()) {
+			navChannel?.invokeMethod(
+				"openCall",
+				mapOf(
+					"channel" to channel,
+					"callerId" to callerId,
+					"callerName" to (callerName ?: callerId),
+					"video" to video,
+					"sessionId" to sessionId
+				)
+			)
+			intent?.removeExtra("call_channel")
+			intent?.removeExtra("caller_id")
+			intent?.removeExtra("caller_name")
+			intent?.removeExtra("video")
+		}
 	}
 
 	private fun clearBadge() {

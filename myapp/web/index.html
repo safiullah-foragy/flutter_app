@@ -19,6 +19,9 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="A new Flutter project.">
+  
+  <!-- Permissions policy for camera and microphone -->
+  <meta http-equiv="Permissions-Policy" content="camera=*, microphone=*, display-capture=*">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -34,5 +37,19 @@
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
+  
+  <!-- Agora Web SDK must load before Flutter needs it -->
+  <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.21.0.js"></script>
+  <script>
+    // Configure Agora on page load
+    window.addEventListener('load', function() {
+      if (typeof AgoraRTC !== 'undefined') {
+        console.log('Agora Web SDK loaded successfully, version:', AgoraRTC.VERSION);
+        AgoraRTC.setLogLevel(1); // Enable debug logging
+      } else {
+        console.error('Agora Web SDK failed to load!');
+      }
+    });
+  </script>
 </body>
 </html>

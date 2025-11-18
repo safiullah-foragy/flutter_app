@@ -7,46 +7,44 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
+import android.media.AudioAttributes
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import android.media.MediaPlayer
-import android.media.AudioAttributes
-import android.content.res.AssetFileDescriptor
 import androidx.core.content.ContextCompat
+import android.content.res.AssetFileDescriptor
 
 /**
- * Lightweight foreground service used while an audio/video call is active,
- * so the call keeps running when the app goes to background.
+ * Foreground service that briefly plays the user's selected message ringtone asset,
+ * so custom sound works even when the app is closed/locked.
  */
-class CallForegroundService : Service() {
+class MessageSoundService : Service() {
     private var mediaPlayer: MediaPlayer? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Ongoing call"
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: ""
-        val video = intent?.getBooleanExtra(EXTRA_VIDEO, false) ?: false
-        val ring = intent?.getBooleanExtra(EXTRA_RING, false) ?: false
         val assetPath = intent?.getStringExtra(EXTRA_ASSET_PATH)
-        startForegroundInternal(title, text, video)
-        if (ring) startRingtone(assetPath) else stopRingtone()
-        return START_STICKY
+        val durationMs = intent?.getIntExtra(EXTRA_DURATION_MS, 6000) ?: 6000
+        startForegroundInternal()
+        startSound(assetPath, durationMs)
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopRingtone()
+        stopSound()
     }
 
-    private fun startForegroundInternal(title: String, text: String, video: Boolean) {
+    private fun startForegroundInternal() {
         val channelId = CHANNEL_ID
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (nm.getNotificationChannel(channelId) == null) {
-                val ch = NotificationChannel(channelId, "Call", NotificationManager.IMPORTANCE_LOW)
-                ch.setShowBadge(false)
+                val ch = NotificationChannel(channelId, "Message Sound", NotificationManager.IMPORTANCE_LOW)
                 ch.setSound(null, null)
+                ch.setShowBadge(false)
                 nm.createNotificationChannel(ch)
             }
         }
@@ -58,69 +56,68 @@ class CallForegroundService : Service() {
             else PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notif: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle(title)
-            .setContentText(text)
+            .setContentTitle("Playing message tone")
+            .setContentText("")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
-            .setContentIntent(pi)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setContentIntent(pi)
             .build()
         startForeground(NOTIF_ID, notif)
     }
 
-    private fun startRingtone(assetPath: String?) {
+    private fun startSound(assetPath: String?, durationMs: Int) {
         try {
-            stopRingtone()
-            val ap = assetPath ?: "Assets/mp3 file/lovely-Alarm.mp3"
-            val am = assets
-            val afd: AssetFileDescriptor = am.openFd("flutter_assets/" + ap)
+            stopSound()
+            val ap = assetPath ?: "Assets/mp3 file/Iphone-Notification.mp3"
+            val afd: AssetFileDescriptor = assets.openFd("flutter_assets/" + ap)
             mediaPlayer = MediaPlayer()
             mediaPlayer?.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 mediaPlayer?.setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build()
                 )
             }
-            mediaPlayer?.isLooping = true
+            mediaPlayer?.isLooping = false
             mediaPlayer?.setVolume(1.0f, 1.0f)
             mediaPlayer?.prepare()
+            mediaPlayer?.setOnCompletionListener {
+                stopSelf()
+            }
             mediaPlayer?.start()
+            // Schedule a stop in durationMs
+            val handler = android.os.Handler(mainLooper)
+            handler.postDelayed({ stopSelf() }, durationMs.toLong())
         } catch (_: Throwable) {
-            stopRingtone()
+            stopSelf()
         }
     }
 
-    private fun stopRingtone() {
+    private fun stopSound() {
         try { mediaPlayer?.stop() } catch (_: Throwable) {}
         try { mediaPlayer?.release() } catch (_: Throwable) {}
         mediaPlayer = null
     }
 
     companion object {
-        private const val CHANNEL_ID = "call_foreground"
-        private const val NOTIF_ID = 2001
-        private const val EXTRA_TITLE = "title"
-        private const val EXTRA_TEXT = "text"
-        private const val EXTRA_VIDEO = "video"
-        private const val EXTRA_RING = "ring"
+        private const val CHANNEL_ID = "msg_sound"
+        private const val NOTIF_ID = 2002
         private const val EXTRA_ASSET_PATH = "assetPath"
+        private const val EXTRA_DURATION_MS = "durationMs"
 
-        fun start(ctx: Context, title: String, text: String, video: Boolean, ring: Boolean = false, assetPath: String? = null) {
-            val i = Intent(ctx, CallForegroundService::class.java)
-            i.putExtra(EXTRA_TITLE, title)
-            i.putExtra(EXTRA_TEXT, text)
-            i.putExtra(EXTRA_VIDEO, video)
-            i.putExtra(EXTRA_RING, ring)
+        fun start(ctx: Context, assetPath: String?, durationMs: Int = 6000) {
+            val i = Intent(ctx, MessageSoundService::class.java)
             if (assetPath != null) i.putExtra(EXTRA_ASSET_PATH, assetPath)
+            i.putExtra(EXTRA_DURATION_MS, durationMs)
             ContextCompat.startForegroundService(ctx, i)
         }
         fun stop(ctx: Context) {
-            val i = Intent(ctx, CallForegroundService::class.java)
+            val i = Intent(ctx, MessageSoundService::class.java)
             ctx.stopService(i)
         }
     }

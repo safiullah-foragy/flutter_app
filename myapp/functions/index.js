@@ -200,3 +200,65 @@ exports.onPostLikeCreated = functions.firestore
     }
     return null;
   });
+
+// Send a high-priority FCM when a new call session is created (ringing)
+exports.onCallSessionCreated = functions.firestore
+  .document('call_sessions/{sessionId}')
+  .onCreate(async (snap, context) => {
+    const data = snap.data() || {};
+    const status = data.status;
+    if (status !== 'ringing') return null;
+    const calleeId = data.callee_id;
+    const callerId = data.caller_id;
+    const channel = data.channel;
+    const video = !!data.video;
+    if (!calleeId || !callerId || !channel) return null;
+
+    // Lookup callee tokens
+    const calleeSnap = await admin.firestore().collection('users').doc(calleeId).get();
+    const tokens = (calleeSnap.exists && Array.isArray((calleeSnap.data() || {}).fcmTokens))
+      ? (calleeSnap.data() || {}).fcmTokens
+      : [];
+
+    // Best-effort caller name
+    let callerName = callerId;
+    try {
+      const callerSnap = await admin.firestore().collection('users').doc(callerId).get();
+      if (callerSnap.exists) {
+        const u = callerSnap.data() || {};
+        callerName = u.name || u.displayName || callerName;
+      }
+    } catch (_) {}
+
+    const payloadData = {
+      type: 'call_invite',
+      call_channel: channel,
+      caller_id: callerId,
+      caller_name: callerName,
+      callee_id: calleeId,
+      video: video ? '1' : '0',
+      call_session_id: context.params.sessionId,
+    };
+
+    try {
+      if (tokens.length > 0) {
+        await admin.messaging().sendEachForMulticast({
+          tokens,
+          data: payloadData,
+          android: {
+            priority: 'high',
+          },
+        });
+      } else {
+        // Fallback to per-user topic
+        await admin.messaging().send({
+          topic: `user_${calleeId}`,
+          data: payloadData,
+          android: { priority: 'high' },
+        });
+      }
+    } catch (e) {
+      console.error('onCallSessionCreated FCM error', e);
+    }
+    return null;
+  });

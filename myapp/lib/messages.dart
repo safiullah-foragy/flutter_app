@@ -19,6 +19,8 @@ import 'see_profile_from_newsfeed.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'background_tasks.dart';
 import 'agora_call_page.dart';
+import 'conversation_settings_page.dart';
+import 'audio_upload_web.dart' if (dart.library.io) 'audio_upload_stub.dart';
 
 /// Conversations list and chat screen.
 class MessagesPage extends StatefulWidget {
@@ -154,20 +156,33 @@ class _MessagesPageState extends State<MessagesPage> {
               }
 
               return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                stream: _firestore.collection('users').doc(otherId).snapshots(includeMetadataChanges: true),
-                builder: (context, userSnap) {
-                  String title = otherId;
-                  String? avatarUrl;
-                  if (userSnap.hasError) {
-                    debugPrint('User lookup error for $otherId: ${userSnap.error}');
-                  }
-                  if (userSnap.hasData && userSnap.data != null && userSnap.data!.exists) {
-                    final u = userSnap.data!.data();
-                    if (u != null) {
-                      title = u['name'] ?? otherId;
-                      avatarUrl = u['profile_image'];
+                stream: _firestore.collection('users').doc(uid).snapshots(includeMetadataChanges: true),
+                builder: (context, currentUserSnap) {
+                  // Check if conversation is muted
+                  bool isMuted = false;
+                  if (currentUserSnap.hasData && currentUserSnap.data != null && currentUserSnap.data!.exists) {
+                    final userData = currentUserSnap.data!.data();
+                    if (userData != null) {
+                      final mutedList = userData['muted_conversations'] as List<dynamic>? ?? [];
+                      isMuted = mutedList.contains(d.id);
                     }
                   }
+
+                  return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                    stream: _firestore.collection('users').doc(otherId).snapshots(includeMetadataChanges: true),
+                    builder: (context, userSnap) {
+                      String title = otherId;
+                      String? avatarUrl;
+                      if (userSnap.hasError) {
+                        debugPrint('User lookup error for $otherId: ${userSnap.error}');
+                      }
+                      if (userSnap.hasData && userSnap.data != null && userSnap.data!.exists) {
+                        final u = userSnap.data!.data();
+                        if (u != null) {
+                          title = u['name'] ?? otherId;
+                          avatarUrl = u['profile_image'];
+                        }
+                      }
                   return Dismissible(
                     key: ValueKey(d.id),
                     direction: DismissDirection.endToStart,
@@ -212,42 +227,54 @@ class _MessagesPageState extends State<MessagesPage> {
                       }
                       return false;
                     },
-                    child: ListTile(
-                      leading: _buildUserAvatar(avatarUrl, otherId),
-                      title: Text(
-                        title.isNotEmpty ? title : 'Conversation',
-                        style: TextStyle(
-                          fontWeight: unread ? FontWeight.bold : FontWeight.normal,
+                    child: GestureDetector(
+                      onLongPress: () => _showConversationOptions(d.id, uid, title, isMuted),
+                      child: ListTile(
+                        leading: _buildUserAvatar(avatarUrl, otherId),
+                        title: Text(
+                          title.isNotEmpty ? title : 'Conversation',
+                          style: TextStyle(
+                            fontWeight: unread ? FontWeight.bold : FontWeight.normal,
+                          ),
                         ),
-                      ),
-                      subtitle: Text(
-                        lastMessage, 
-                        maxLines: 1, 
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: unread ? Colors.black : Colors.grey,
+                        subtitle: Text(
+                          lastMessage, 
+                          maxLines: 1, 
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: unread ? Colors.black : Colors.grey,
+                          ),
                         ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(_formatTimestamp(lastUpdated), style: const TextStyle(fontSize: 12)),
+                                if (unread) const Icon(Icons.circle, color: Colors.blue, size: 10),
+                              ],
+                            ),
+                            if (isMuted) const SizedBox(width: 8),
+                            if (isMuted) const Icon(Icons.notifications_off, color: Colors.grey, size: 20),
+                          ],
+                        ),
+                        onTap: () async {
+                          await _markConversationRead(d.id, uid);
+                          Navigator.of(context).restorablePush(
+                            ChatPage.restorableRoute,
+                            arguments: {
+                              'conversationId': d.id,
+                              'otherUserId': otherId,
+                            },
+                          );
+                        },
                       ),
-                      trailing: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(_formatTimestamp(lastUpdated), style: const TextStyle(fontSize: 12)),
-                          if (unread) const Icon(Icons.circle, color: Colors.blue, size: 10),
-                        ],
-                      ),
-                      onTap: () async {
-                        await _markConversationRead(d.id, uid);
-                        Navigator.of(context).restorablePush(
-                          ChatPage.restorableRoute,
-                          arguments: {
-                            'conversationId': d.id,
-                            'otherUserId': otherId,
-                          },
-                        );
-                      },
                     ),
-                  );
+                    );
+                  },
+                );
                 },
               );
             },
@@ -550,6 +577,109 @@ class _MessagesPageState extends State<MessagesPage> {
     );
   }
 
+  Future<void> _showConversationOptions(String conversationId, String currentUserId, String conversationTitle, bool isMuted) async {
+    final choice = await showDialog<String?>(
+      context: context,
+      builder: (c) {
+        return SimpleDialog(
+          title: Text('Options for $conversationTitle'),
+          children: [
+            SimpleDialogOption(
+              child: const Row(
+                children: [
+                  Icon(Icons.delete, color: Colors.red),
+                  SizedBox(width: 8),
+                  Text('Delete Conversation', style: TextStyle(color: Colors.red)),
+                ],
+              ),
+              onPressed: () => Navigator.pop(c, 'delete'),
+            ),
+            SimpleDialogOption(
+              child: Row(
+                children: [
+                  Icon(isMuted ? Icons.notifications_active : Icons.notifications_off),
+                  const SizedBox(width: 8),
+                  Text(isMuted ? 'Unmute Notifications' : 'Mute Notifications'),
+                ],
+              ),
+              onPressed: () => Navigator.pop(c, isMuted ? 'unmute' : 'mute'),
+            ),
+            SimpleDialogOption(
+              child: const Text('Cancel'),
+              onPressed: () => Navigator.pop(c, null),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (choice == 'delete') {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Delete Conversation'),
+          content: const Text('This will permanently delete all messages and media. Continue?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Delete', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        final ok = await _deleteConversation(conversationId);
+        if (mounted && ok) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Conversation deleted')),
+          );
+        }
+      }
+    } else if (choice == 'mute') {
+      try {
+        // Add conversation to user's muted list
+        await _firestore.collection('users').doc(currentUserId).update({
+          'muted_conversations': FieldValue.arrayUnion([conversationId]),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Muted notifications for $conversationTitle')),
+          );
+        }
+      } catch (e) {
+        debugPrint('Failed to mute conversation: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to mute notifications')),
+          );
+        }
+      }
+    } else if (choice == 'unmute') {
+      try {
+        // Remove conversation from user's muted list
+        await _firestore.collection('users').doc(currentUserId).update({
+          'muted_conversations': FieldValue.arrayRemove([conversationId]),
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Unmuted notifications for $conversationTitle')),
+          );
+        }
+      } catch (e) {
+        debugPrint('Failed to unmute conversation: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to unmute notifications')),
+          );
+        }
+      }
+    }
+  }
+
   Future<bool> _deleteConversation(String conversationId) async {
     try {
       final msgs = await _firestore
@@ -558,18 +688,51 @@ class _MessagesPageState extends State<MessagesPage> {
           .collection('messages')
           .get();
       
+      // Collect all Supabase file URLs for cleanup
+      final List<String> supabaseUrls = [];
+      for (var d in msgs.docs) {
+        final data = d.data() as Map<String, dynamic>? ?? {};
+        final fileUrl = data['file_url'] as String? ?? '';
+        if (fileUrl.isNotEmpty && fileUrl.contains('supabase')) {
+          supabaseUrls.add(fileUrl);
+        }
+      }
+
+      // Delete messages from Firestore
       final batch = _firestore.batch();
       for (var d in msgs.docs) {
         batch.delete(d.reference);
       }
       await batch.commit();
+      
+      // Delete Supabase files
+      for (final url in supabaseUrls) {
+        try {
+          // Extract path from URL (format: https://...supabase.co/storage/v1/object/public/bucket/path)
+          final uri = Uri.parse(url);
+          final pathSegments = uri.pathSegments;
+          if (pathSegments.length >= 5 && pathSegments[0] == 'storage') {
+            final bucket = pathSegments[4]; // bucket name
+            final filePath = pathSegments.skip(5).join('/'); // file path
+            await sb.supabase.storage.from(bucket).remove([filePath]);
+            debugPrint('Deleted Supabase file: $bucket/$filePath');
+          }
+        } catch (e) {
+          debugPrint('Failed to delete Supabase file $url: $e');
+          // Continue cleanup even if some files fail
+        }
+      }
+      
+      // Delete conversation document
       await _firestore.collection('conversations').doc(conversationId).delete();
       return true;
     } catch (e) {
       debugPrint('Failed to delete conversation $conversationId: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to delete conversation'))
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to delete conversation'))
+        );
+      }
       return false;
     }
   }
@@ -612,9 +775,7 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _markRead();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
+    // Initial scroll will be handled by StreamBuilder's postFrameCallback
     _posSub = _audioPlayer.onPositionChanged.listen((_) {
       if (mounted) setState(() {});
     });
@@ -622,11 +783,10 @@ class _ChatPageState extends State<ChatPage> {
 
   void _scrollToBottom() {
     if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
+      // Use jumpTo for instant scroll on initial load, animateTo for updates
+      if (_scrollController.position.maxScrollExtent > 0) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      }
     }
   }
 
@@ -658,8 +818,9 @@ class _ChatPageState extends State<ChatPage> {
     final otherId = widget.otherUserId;
 
     // Create /call_sessions doc for global signaling so callee gets full-screen dialog even outside MessagesPage.
+    String? sessionId;
     try {
-      await FirebaseFirestore.instance.collection('call_sessions').add({
+      final ref = await FirebaseFirestore.instance.collection('call_sessions').add({
         'channel': channel,
         'caller_id': uid,
         'callee_id': otherId,
@@ -669,6 +830,7 @@ class _ChatPageState extends State<ChatPage> {
         'accepted_at': null,
         'ended_at': null,
       });
+      sessionId = ref.id;
     } catch (e) {
       debugPrint('Failed to create call session: $e');
     }
@@ -707,7 +869,7 @@ class _ChatPageState extends State<ChatPage> {
 
     if (!mounted) return;
     // Even if sending the Firestore invite failed (permissions or network), open the local call UI so the caller can start/join.
-    Navigator.push(context, CallPage.route(channelName: channel, video: !audioOnly));
+    Navigator.push(context, CallPage.route(channelName: channel, video: !audioOnly, callSessionId: sessionId));
   }
 
   Future<void> _sendMessage({String? text, String? fileUrl, String? fileType}) async {
@@ -956,14 +1118,9 @@ class _ChatPageState extends State<ChatPage> {
       setState(() => _isRecording = false);
       if (path == null || path.isEmpty) return;
 
-      if (kIsWeb) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Voice recording send is not supported on web yet')),
-        );
-        return;
-      }
+      setState(() => _sending = true);
 
-      // Offline handling similar to image/video
+      // Check offline status
       final conn = await Connectivity().checkConnectivity();
       final offline = conn == ConnectivityResult.none;
       final uid = _auth.currentUser?.uid;
@@ -999,7 +1156,13 @@ class _ChatPageState extends State<ChatPage> {
       // Upload now
       String url = '';
       try {
-        url = await sb.uploadMessageAudio(File(path));
+        if (kIsWeb) {
+          // Web: read as bytes from the recorded blob
+          final bytes = await readAudioBlobAsBytes(path);
+          url = await sb.uploadMessageAudioBytes(bytes, fileName: 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
+        } else {
+          url = await sb.uploadMessageAudio(File(path));
+        }
       } catch (e) {
         debugPrint('Audio upload error: $e');
         final msg = e.toString();
@@ -1144,7 +1307,7 @@ class _ChatPageState extends State<ChatPage> {
           ),
           IconButton(
             tooltip: 'Video Call',
-            icon: const Icon(Icons.videocam),
+            icon: const Icon(Icons.video_call),
             onPressed: () => _startCall(audioOnly: false),
           ),
           IconButton(
@@ -1161,6 +1324,30 @@ class _ChatPageState extends State<ChatPage> {
                 ),
               );
             },
+          ),
+          PopupMenuButton<String>(
+            onSelected: (v) async {
+              if (v == 'conversation_settings') {
+                // Get other user's name from StreamBuilder
+                final userDoc = await _firestore.collection('users').doc(widget.otherUserId).get();
+                final userName = userDoc.exists ? (userDoc.data()?['name'] ?? widget.otherUserId) : widget.otherUserId;
+                if (mounted) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ConversationSettingsPage(
+                        conversationId: widget.conversationId,
+                        otherUserId: widget.otherUserId,
+                        otherUserName: userName,
+                      ),
+                    ),
+                  );
+                }
+              }
+            },
+            itemBuilder: (c) => const [
+              PopupMenuItem<String>(value: 'conversation_settings', child: Text('Notification Settings')),
+            ],
           ),
         ],
       ),

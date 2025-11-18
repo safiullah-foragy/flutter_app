@@ -100,6 +100,8 @@ service cloud.firestore {
       allow update: if isParticipant()
                     && request.resource.data.participants == resource.data.participants
                     && request.resource.data.diff(resource.data).changedKeys().hasOnly(['last_message','last_updated','archived','typing','last_read','participants']);
+      // Allow participants to delete the entire conversation
+      allow delete: if isParticipant();
 
       // Messages
       match /messages/{messageId} {
@@ -131,8 +133,8 @@ service cloud.firestore {
                           request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','edited','reactions','file_url','uploading'])
                         )
                       );
-        // Delete by sender only
-        allow delete: if isMsgParticipant() && resource.data.sender_id == request.auth.uid;
+        // Delete: any participant can delete messages (allows conversation cleanup)
+        allow delete: if isMsgParticipant();
       }
     }
 
@@ -193,7 +195,6 @@ service cloud.firestore {
     // CALL SESSIONS (direct call signaling)
     match /call_sessions/{sessionId} {
       function isParticipant() { return signedIn() && (resource.data.caller_id == request.auth.uid || resource.data.callee_id == request.auth.uid); }
-      function isParticipantReq() { return signedIn() && (request.resource.data.caller_id == request.auth.uid || request.resource.data.callee_id == request.auth.uid); }
 
       // Create: caller creates a ringing session
       allow create: if signedIn()
@@ -206,20 +207,23 @@ service cloud.firestore {
       // Read: participants only
       allow read: if isParticipant();
 
-      // Update: participants can update status lifecycle (accepted / ended)
+      // Update: participants can update status lifecycle (accepted / rejected / ended / missed)
       allow update: if isParticipant()
                     && request.resource.data.caller_id == resource.data.caller_id
                     && request.resource.data.callee_id == resource.data.callee_id
                     && request.resource.data.channel == resource.data.channel
                     && request.resource.data.video == resource.data.video
                     && request.resource.data.created_at == resource.data.created_at
-                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','accepted_at','ended_at'])
+                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','accepted_at','ended_at','ended_by'])
                     && (
                       // Accept
                       (request.resource.data.status == 'accepted' && request.resource.data.accepted_at is int && resource.data.status == 'ringing')
                       ||
-                      // End
+                      // End (with optional ended_by)
                       (request.resource.data.status == 'ended' && request.resource.data.ended_at is int)
+                      ||
+                      // Rejected by callee (with optional ended_by)
+                      (request.resource.data.status == 'rejected' && request.resource.data.ended_at is int && resource.data.status == 'ringing')
                       ||
                       // Ringing -> ended (missed)
                       (request.resource.data.status == 'missed' && request.resource.data.ended_at is int && resource.data.status == 'ringing')
