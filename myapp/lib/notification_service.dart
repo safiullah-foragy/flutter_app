@@ -1,7 +1,5 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:audioplayers/audioplayers.dart';
 
 class NotificationService {
@@ -57,45 +55,9 @@ class NotificationService {
         ?.createNotificationChannel(callChannel);
   }
 
-  /// Get conversation-specific ringtone settings
-  Future<Map<String, dynamic>> _getConversationSettings(String conversationId, String otherUserId) async {
-    try {
-      final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
-      if (uid == null) return _getDefaultSettings();
 
-      final doc = await FirebaseFirestore.instance
-          .collection('conversations')
-          .doc(conversationId)
-          .get();
 
-      if (!doc.exists) return _getDefaultSettings();
-
-      final data = doc.data() ?? {};
-      final settings = data['settings'] as Map<String, dynamic>? ?? {};
-      final userSettings = settings[uid] as Map<String, dynamic>? ?? {};
-
-      return {
-        'notification_sound': userSettings['notification_sound'] ?? defaultMessageSound,
-        'notification_silent': userSettings['notification_silent'] ?? false,
-        'call_ringtone': userSettings['call_ringtone'] ?? defaultCallRingtone,
-        'call_ringtone_silent': userSettings['call_ringtone_silent'] ?? false,
-      };
-    } catch (e) {
-      debugPrint('Error loading conversation settings: $e');
-      return _getDefaultSettings();
-    }
-  }
-
-  Map<String, dynamic> _getDefaultSettings() {
-    return {
-      'notification_sound': defaultMessageSound,
-      'notification_silent': false,
-      'call_ringtone': defaultCallRingtone,
-      'call_ringtone_silent': false,
-    };
-  }
-
-  /// Show message notification with custom ringtone
+  /// Show message notification with constant ringtone
   Future<void> showMessageNotification({
     required String conversationId,
     required String otherUserId,
@@ -104,14 +66,8 @@ class NotificationService {
   }) async {
     if (kIsWeb) return;
 
-    final settings = await _getConversationSettings(conversationId, otherUserId);
-    final isSilent = settings['notification_silent'] as bool? ?? false;
-    final soundPath = settings['notification_sound'] as String? ?? defaultMessageSound;
-
-    // Play custom ringtone if not silent
-    if (!isSilent && soundPath.isNotEmpty) {
-      await _playNotificationSound(soundPath);
-    }
+    // Always play notification sound
+    await _playNotificationSound(defaultMessageSound);
 
     // Show notification
     final payload = 'convId=$conversationId&otherId=$otherUserId';
@@ -119,7 +75,7 @@ class NotificationService {
       conversationId.hashCode,
       title,
       body,
-      NotificationDetails(
+      const NotificationDetails(
         android: AndroidNotificationDetails(
           'messages',
           'Messages',
@@ -127,14 +83,14 @@ class NotificationService {
           importance: Importance.high,
           priority: Priority.high,
           playSound: false, // We handle sound ourselves
-          enableVibration: !isSilent,
+          enableVibration: true,
         ),
       ),
       payload: payload,
     );
   }
 
-  /// Show incoming call notification with custom ringtone
+  /// Show incoming call notification with constant ringtone
   Future<void> showCallNotification({
     required String conversationId,
     required String otherUserId,
@@ -145,14 +101,8 @@ class NotificationService {
   }) async {
     if (kIsWeb) return;
 
-    final settings = await _getConversationSettings(conversationId, otherUserId);
-    final isSilent = settings['call_ringtone_silent'] as bool? ?? false;
-    final ringtonePath = settings['call_ringtone'] as String? ?? defaultCallRingtone;
-
-    // Play custom ringtone if not silent (loop until answered/declined)
-    if (!isSilent && ringtonePath.isNotEmpty) {
-      await _playCallRingtone(ringtonePath);
-    }
+    // Always play call ringtone
+    await _playCallRingtone(defaultCallRingtone);
 
     // Show full-screen call notification
     final payload = 'call&convId=$conversationId&otherId=$otherUserId&channel=$channelName&video=$isVideo&sessionId=$sessionId';
@@ -161,7 +111,7 @@ class NotificationService {
       sessionId.hashCode,
       '${isVideo ? 'Video' : 'Audio'} Call',
       'Incoming call from $callerName',
-      NotificationDetails(
+      const NotificationDetails(
         android: AndroidNotificationDetails(
           'calls',
           'Calls',
@@ -169,14 +119,14 @@ class NotificationService {
           importance: Importance.max,
           priority: Priority.max,
           playSound: false, // We handle sound ourselves
-          enableVibration: !isSilent,
+          enableVibration: true,
           fullScreenIntent: true,
           category: AndroidNotificationCategory.call,
           ongoing: true,
           autoCancel: false,
           actions: [
-            const AndroidNotificationAction('decline', 'Decline', showsUserInterface: false),
-            const AndroidNotificationAction('accept', 'Accept', showsUserInterface: true),
+            AndroidNotificationAction('decline', 'Decline', showsUserInterface: false),
+            AndroidNotificationAction('accept', 'Accept', showsUserInterface: true),
           ],
         ),
       ),

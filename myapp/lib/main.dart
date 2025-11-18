@@ -520,42 +520,12 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     if (_showingGlobalCall || !mounted) return;
     _showingGlobalCall = true;
     
-    // Find conversation to get custom ringtone
+    // Find conversation
     final convId = await _findConversationWith(callerId);
     
-    // Start playing ringtone
-    String ringtonePath = NotificationService.defaultCallRingtone;
-    if (convId != null) {
-      try {
-        final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
-        if (uid != null) {
-          final doc = await FirebaseFirestore.instance.collection('conversations').doc(convId).get();
-          if (doc.exists) {
-            final data = doc.data() ?? {};
-            final settings = data['settings'] as Map<String, dynamic>? ?? {};
-            final userSettings = settings[uid] as Map<String, dynamic>? ?? {};
-            final isSilent = userSettings['call_ringtone_silent'] as bool? ?? false;
-            final customPath = userSettings['call_ringtone'] as String?;
-            
-            if (!isSilent) {
-              if (customPath != null && customPath.isNotEmpty) {
-                ringtonePath = customPath;
-              }
-              debugPrint('Starting call ringtone: $ringtonePath');
-              await NotificationService.instance.playCallRingtone(ringtonePath);
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint('Error loading ringtone settings: $e');
-        // Play default ringtone on error
-        await NotificationService.instance.playCallRingtone(ringtonePath);
-      }
-    } else {
-      // No conversation found, play default
-      debugPrint('No conversation found, playing default ringtone');
-      await NotificationService.instance.playCallRingtone(ringtonePath);
-    }
+    // Start playing constant ringtone
+    debugPrint('Starting call ringtone: ${NotificationService.defaultCallRingtone}');
+    await NotificationService.instance.playCallRingtone(NotificationService.defaultCallRingtone);
     
     // Load caller profile
     Map<String, dynamic>? user;

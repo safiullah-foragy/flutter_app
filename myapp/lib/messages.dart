@@ -19,7 +19,6 @@ import 'see_profile_from_newsfeed.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'background_tasks.dart';
 import 'agora_call_page.dart';
-import 'conversation_settings_page.dart';
 import 'audio_upload_web.dart' if (dart.library.io) 'audio_upload_stub.dart';
 
 /// Conversations list and chat screen.
@@ -1325,30 +1324,7 @@ class _ChatPageState extends State<ChatPage> {
               );
             },
           ),
-          PopupMenuButton<String>(
-            onSelected: (v) async {
-              if (v == 'conversation_settings') {
-                // Get other user's name from StreamBuilder
-                final userDoc = await _firestore.collection('users').doc(widget.otherUserId).get();
-                final userName = userDoc.exists ? (userDoc.data()?['name'] ?? widget.otherUserId) : widget.otherUserId;
-                if (mounted) {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ConversationSettingsPage(
-                        conversationId: widget.conversationId,
-                        otherUserId: widget.otherUserId,
-                        otherUserName: userName,
-                      ),
-                    ),
-                  );
-                }
-              }
-            },
-            itemBuilder: (c) => const [
-              PopupMenuItem<String>(value: 'conversation_settings', child: Text('Notification Settings')),
-            ],
-          ),
+
         ],
       ),
       body: Column(
