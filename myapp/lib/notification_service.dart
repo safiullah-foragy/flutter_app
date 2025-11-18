@@ -10,7 +10,7 @@ class NotificationService {
   AudioPlayer? _ringtonePlayer;
   
   // Default ringtones
-  static const String defaultCallRingtone = 'assets/mp3 file/lovely-Alarm.mp3';
+  static const String defaultCallRingtone = 'assets/mp3 file/Lovely-Alarm.mp3';
   static const String defaultMessageSound = 'assets/mp3 file/Iphone-Notification.mp3';
 
   Future<void> initialize() async {
@@ -172,9 +172,13 @@ class NotificationService {
   /// Play call ringtone (looping)
   Future<void> _playCallRingtone(String assetPath) async {
     try {
+      debugPrint('=== Starting call ringtone playback ===');
+      debugPrint('Asset path: $assetPath');
+      
       await stopCallRingtone(); // Stop any existing player
       
       _ringtonePlayer = AudioPlayer();
+      debugPrint('AudioPlayer created');
       
       // Configure for ringtone (loud, looping)
       await _ringtonePlayer!.setAudioContext(AudioContext(
@@ -185,17 +189,21 @@ class NotificationService {
           audioFocus: AndroidAudioFocus.gain,
         ),
       ));
+      debugPrint('Audio context configured');
       
       await _ringtonePlayer!.setReleaseMode(ReleaseMode.loop); // Loop until stopped
       await _ringtonePlayer!.setVolume(1.0);
+      debugPrint('Release mode and volume set');
       
       // Strip 'assets/' prefix for AssetSource
       String strippedPath = assetPath.replaceFirst('assets/', '');
-      debugPrint('Playing call ringtone: $strippedPath');
+      debugPrint('Stripped path for AssetSource: $strippedPath');
+      
       await _ringtonePlayer!.play(AssetSource(strippedPath));
-      debugPrint('Call ringtone started');
-    } catch (e) {
-      debugPrint('Error playing call ringtone: $e');
+      debugPrint('=== Call ringtone play command sent successfully ===');
+    } catch (e, stackTrace) {
+      debugPrint('!!! Error playing call ringtone: $e');
+      debugPrint('Stack trace: $stackTrace');
     }
   }
 

@@ -154,26 +154,8 @@ class _CallPageState extends State<CallPage> {
       return;
     }
 
-    // Join channel
-    if (_webClient != null && _engineInitialized && _token != null) {
-      try {
-        debugPrint('AgoraWeb: Joining channel: ${widget.channelName}, uid: $_localUid, video: ${widget.video}');
-        await _webClient!.joinChannel(
-          token: _token!,
-          channelName: widget.channelName,
-          uid: _localUid,
-          enableVideo: widget.video,
-        );
-        debugPrint('AgoraWeb: Joined channel successfully');
-      } catch (e) {
-        debugPrint('AgoraWeb: Join channel error - $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Failed to join channel: $e'),
-          ));
-        }
-      }
-    }
+    // Don't join channel yet - wait for call acceptance
+    debugPrint('AgoraWeb: Initialization complete, waiting for call acceptance');
   }
 
   /// Initialize Agora for Native platforms (Android/iOS)
@@ -268,27 +250,86 @@ class _CallPageState extends State<CallPage> {
       return;
     }
 
-    // Join channel
-    if (_engine != null && _engineInitialized) {
-      if (_token == null || _token!.isEmpty) {
-        debugPrint('Agora: Token is empty, cannot join');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Agora token — cannot join channel')));
-        }
-        return;
-      }
+    // Don't join channel yet - wait for call acceptance
+    debugPrint('Agora: Initialization complete, waiting for call acceptance');
+  }
 
-      debugPrint('Agora: Joining channel: ${widget.channelName}, uid: $_localUid, video: ${widget.video}');
-      await _engine!.joinChannel(
-        token: _token!,
-        channelId: widget.channelName,
-        uid: _localUid,
-        options: const ChannelMediaOptions(
-          channelProfile: ChannelProfileType.channelProfileCommunication,
-          clientRoleType: ClientRoleType.clientRoleBroadcaster,
-        ),
-      );
-      debugPrint('Agora: joinChannel() called, waiting for onJoinChannelSuccess callback...');
+  // Join channel after call is accepted
+  Future<void> _joinChannel() async {
+    if (_joined) return;
+    
+    if (kIsWeb) {
+      // Web join
+      if (_webClient != null && _engineInitialized && _token != null) {
+        try {
+          debugPrint('AgoraWeb: Joining channel: ${widget.channelName}, uid: $_localUid, video: ${widget.video}');
+          await _webClient!.joinChannel(
+            token: _token!,
+            channelName: widget.channelName,
+            uid: _localUid,
+            enableVideo: widget.video,
+          );
+          debugPrint('AgoraWeb: Joined channel successfully');
+        } catch (e) {
+          debugPrint('AgoraWeb: Join channel error - $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Failed to join channel: $e'),
+            ));
+          }
+        }
+      }
+    } else {
+      // Native join
+      if (_engine != null && _engineInitialized) {
+        if (_token == null || _token!.isEmpty) {
+          debugPrint('Agora: Token is empty, cannot join');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Agora token — cannot join channel')));
+          }
+          return;
+        }
+
+        debugPrint('Agora: Joining channel: ${widget.channelName}, uid: $_localUid, video: ${widget.video}');
+        await _engine!.joinChannel(
+          token: _token!,
+          channelId: widget.channelName,
+          uid: _localUid,
+          options: const ChannelMediaOptions(
+            channelProfile: ChannelProfileType.channelProfileCommunication,
+            clientRoleType: ClientRoleType.clientRoleBroadcaster,
+          ),
+        );
+        debugPrint('Agora: joinChannel() called, waiting for onJoinChannelSuccess callback...');
+      }
+    }
+  }
+
+  // Leave channel
+  Future<void> _leaveChannel() async {
+    if (!_joined) return;
+    
+    if (kIsWeb) {
+      try {
+        await _webClient?.leaveChannel();
+        debugPrint('AgoraWeb: Left channel');
+      } catch (e) {
+        debugPrint('AgoraWeb: Error leaving channel: $e');
+      }
+    } else {
+      try {
+        await _engine?.leaveChannel();
+        debugPrint('Agora: Left channel');
+      } catch (e) {
+        debugPrint('Agora: Error leaving channel: $e');
+      }
+    }
+    
+    if (mounted) {
+      setState(() {
+        _joined = false;
+        _remoteUids.clear();
+      });
     }
   }
 
@@ -334,15 +375,24 @@ class _CallPageState extends State<CallPage> {
       if (uid != null && data['caller_id'] is String) {
         _isCaller = (data['caller_id'] == uid);
       }
-      if (_isCaller && !_outgoingToneStarted) {
+      
+      // Start outgoing tone for caller
+      if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
         _outgoingToneStarted = true;
         await _startOutgoingTone();
       }
+      
+      // When call is accepted, stop ringtone and join channel
       if (status == 'accepted') {
         _stopOutgoingTone();
+        // Join channel only after acceptance
+        if (!_joined && _engineInitialized) {
+          await _joinChannel();
+        }
       } else if (status == 'rejected') {
         _terminalReason ??= 'Call rejected';
         _stopOutgoingTone();
+        await _leaveChannel();
         setState(() {});
         // Auto-close after 2 seconds
         Future.delayed(const Duration(seconds: 2), () {
@@ -351,6 +401,7 @@ class _CallPageState extends State<CallPage> {
       } else if (status == 'ended') {
         _terminalReason ??= 'Call ended';
         _stopOutgoingTone();
+        await _leaveChannel();
         setState(() {});
         // Auto-close after 2 seconds
         Future.delayed(const Duration(seconds: 2), () {
@@ -359,6 +410,7 @@ class _CallPageState extends State<CallPage> {
       } else if (status == 'missed') {
         _terminalReason ??= 'Missed call';
         _stopOutgoingTone();
+        await _leaveChannel();
         setState(() {});
         // Auto-close after 2 seconds
         Future.delayed(const Duration(seconds: 2), () {
@@ -366,11 +418,6 @@ class _CallPageState extends State<CallPage> {
         });
       }
     });
-    // If we couldn't determine caller from session (rare), still start as fallback
-    if (!_outgoingToneStarted) {
-      _outgoingToneStarted = true;
-      _startOutgoingTone();
-    }
   }
 
   Future<void> _startOutgoingTone() async {
