@@ -372,11 +372,15 @@ class _CallPageState extends State<CallPage> {
       final data = doc.data() ?? {};
       final status = data['status'] as String?;
       final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+      
+      // Determine if we're the caller
       if (uid != null && data['caller_id'] is String) {
         _isCaller = (data['caller_id'] == uid);
       }
       
-      // Start outgoing tone for caller
+      debugPrint('Call session status: $status, isCaller: $_isCaller, joined: $_joined');
+      
+      // Start outgoing tone for caller only when ringing
       if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
         _outgoingToneStarted = true;
         await _startOutgoingTone();
@@ -385,8 +389,9 @@ class _CallPageState extends State<CallPage> {
       // When call is accepted, stop ringtone and join channel
       if (status == 'accepted') {
         _stopOutgoingTone();
-        // Join channel only after acceptance
+        // Join channel only after acceptance and only once
         if (!_joined && _engineInitialized) {
+          debugPrint('Call accepted, joining channel...');
           await _joinChannel();
         }
       } else if (status == 'rejected') {
