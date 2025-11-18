@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:video_player/video_player.dart';
@@ -119,8 +120,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     _vController = null;
 
     final rawUrl = (widget.videos[idx]['video_url'] as String?) ?? '';
+    debugPrint('🎬 VideoPlayerScreen: Loading video at index $idx, rawUrl: $rawUrl');
     final url = await _resolveVideoUrl(rawUrl);
+    debugPrint('🎬 VideoPlayerScreen: Resolved URL: $url');
     if (url.isEmpty) {
+      debugPrint('🎬 VideoPlayerScreen: URL is empty, showing error');
       setState(() {
         _error = true;
         _loading = false;
@@ -129,30 +133,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
 
     try {
+      debugPrint('🎬 VideoPlayerScreen: Creating VideoPlayerController for URL: $url');
       _vController = VideoPlayerController.networkUrl(Uri.parse(url));
+      debugPrint('🎬 VideoPlayerScreen: Initializing video controller...');
       await _vController!.initialize().timeout(const Duration(seconds: 12));
-      // Filter videos longer than ~20s
+      debugPrint('🎬 VideoPlayerScreen: Video initialized successfully');
       final duration = _vController!.value.duration;
-      if (duration.inSeconds > 20) {
-        // Skip to next available
-        _playNext();
-        return;
-      }
+      debugPrint('🎬 VideoPlayerScreen: Video duration: ${duration.inSeconds}s');
+      debugPrint('🎬 VideoPlayerScreen: Proceeding to play (unlimited duration)');
+      debugPrint('🎬 VideoPlayerScreen: Creating ChewieController...');
       _chewieController = ChewieController(
         videoPlayerController: _vController!,
         autoPlay: true,
         looping: false,
         allowMuting: true,
-        errorBuilder: (context, errorMessage) => Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, color: Colors.red),
-              const SizedBox(height: 8),
-              Text('Video error: ' + errorMessage),
-            ],
-          ),
-        ),
+        errorBuilder: (context, errorMessage) {
+          debugPrint('🎬 VideoPlayerScreen: Error in player: $errorMessage');
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red),
+                const SizedBox(height: 8),
+                Text('Video error: ' + errorMessage),
+              ],
+            ),
+          );
+        },
       );
 
       // listen for end
@@ -167,11 +174,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         }
       });
 
+      debugPrint('🎬 VideoPlayerScreen: Video ready to play');
       setState(() {
         _loading = false;
         _error = false;
       });
     } catch (e) {
+      debugPrint('🎬 VideoPlayerScreen: Video init error for $url: $e');
       print('Video init error for $url: $e');
       setState(() {
         _error = true;
@@ -210,22 +219,59 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<String> _resolveVideoUrl(String url) async {
-    if (url.isEmpty) return '';
-    if (await _validateUrlExists(url)) return url;
+    debugPrint('🎬 _resolveVideoUrl: Input URL: $url');
+    if (url.isEmpty) {
+      debugPrint('🎬 _resolveVideoUrl: URL is empty, returning empty');
+      return '';
+    }
+    
+    // On web, skip validation due to CORS issues - trust Supabase URLs
+    if (kIsWeb && url.contains('supabase.co')) {
+      debugPrint('🎬 _resolveVideoUrl: Web platform, trusting Supabase URL: $url');
+      return url;
+    }
+    
+    debugPrint('🎬 _resolveVideoUrl: Validating URL exists...');
+    if (await _validateUrlExists(url)) {
+      debugPrint('🎬 _resolveVideoUrl: URL is valid and exists, returning: $url');
+      return url;
+    }
+    debugPrint('🎬 _resolveVideoUrl: URL validation failed, trying to create signed URL...');
     try {
       final marker = '/storage/v1/object/public/';
       final idx = url.indexOf(marker);
-      if (idx == -1) return '';
+      if (idx == -1) {
+        debugPrint('🎬 _resolveVideoUrl: Marker not found in URL');
+        return '';
+      }
       final tail = url.substring(idx + marker.length);
       final parts = tail.split('/');
-      if (parts.length < 2) return '';
+      if (parts.length < 2) {
+        debugPrint('🎬 _resolveVideoUrl: Not enough parts in URL path');
+        return '';
+      }
       final bucket = parts[0];
       final objectPath = parts.sublist(1).join('/');
+      debugPrint('🎬 _resolveVideoUrl: Creating signed URL for bucket: $bucket, path: $objectPath');
       final dynamic signed = await sb.supabase.storage.from(bucket).createSignedUrl(objectPath, 60 * 60);
       final String? signedUrl = signed?.toString();
-      if (signedUrl == null) return '';
-      return (await _validateUrlExists(signedUrl)) ? signedUrl : '';
-    } catch (_) {
+      if (signedUrl == null) {
+        debugPrint('🎬 _resolveVideoUrl: Failed to create signed URL');
+        return '';
+      }
+      debugPrint('🎬 _resolveVideoUrl: Signed URL created: $signedUrl');
+      
+      // On web, trust signed URLs without validation due to CORS
+      if (kIsWeb) {
+        debugPrint('🎬 _resolveVideoUrl: Web platform, trusting signed URL');
+        return signedUrl;
+      }
+      
+      final isValid = await _validateUrlExists(signedUrl);
+      debugPrint('🎬 _resolveVideoUrl: Signed URL validation: $isValid');
+      return isValid ? signedUrl : '';
+    } catch (e) {
+      debugPrint('🎬 _resolveVideoUrl: Exception during URL resolution: $e');
       return '';
     }
   }
@@ -373,11 +419,7 @@ class _ReelsPlayerScreenState extends State<ReelsPlayerScreen> {
     try {
       _vController = VideoPlayerController.networkUrl(Uri.parse(url));
       await _vController!.initialize().timeout(const Duration(seconds: 12));
-      // Only play short videos (~<= 20s)
-      if (_vController!.value.duration.inSeconds > 20) {
-        _playNext();
-        return;
-      }
+      // Play videos of any duration
       _chewieController = ChewieController(
         videoPlayerController: _vController!,
         autoPlay: true,

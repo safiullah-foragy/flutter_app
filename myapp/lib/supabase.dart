@@ -259,3 +259,53 @@ Future<String> uploadNotebookImageBytes(Uint8List data, {String? fileName, Strin
 Future<String> uploadNotebookVideoBytes(Uint8List data, {String? fileName, String? contentType}) async {
   return uploadImageData(data, fileName: fileName, folder: 'notebook-videos', contentType: contentType);
 }
+
+/// Document uploads for messages (PDF, TXT, DOC)
+Future<String> uploadMessageDocument(File documentFile, {String? fileName, String? bucket}) async {
+  final String targetBucket = bucket ?? 'message-docs';
+  return uploadImage(documentFile, fileName: fileName, folder: targetBucket);
+}
+
+Future<String> uploadMessageDocumentBytes(Uint8List data, {required String fileName, String? bucket}) async {
+  final String targetBucket = bucket ?? 'message-docs';
+  
+  // Infer content type from file extension
+  final String ext = p.extension(fileName).toLowerCase();
+  String? contentType;
+  if (ext == '.pdf') {
+    contentType = 'application/pdf';
+  } else if (ext == '.txt') {
+    contentType = 'text/plain';
+  } else if (ext == '.doc') {
+    contentType = 'application/msword';
+  } else if (ext == '.docx') {
+    contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  } else {
+    contentType = 'application/octet-stream';
+  }
+  
+  return uploadImageData(data, fileName: fileName, folder: targetBucket, contentType: contentType);
+}
+
+/// Regenerate a fresh public URL from an existing Supabase storage URL
+/// Useful when cached URLs have expired or returned 400 errors
+Future<String?> getPublicUrl(String bucket, String filePath) async {
+  try {
+    final String publicUrl = supabase.storage.from(bucket).getPublicUrl(filePath);
+    return publicUrl;
+  } catch (e) {
+    print('Error getting public URL: $e');
+    return null;
+  }
+}
+
+/// Create a fresh signed URL with expiration (default 1 hour)
+Future<String?> createSignedUrl(String bucket, String filePath, {int expiresIn = 3600}) async {
+  try {
+    final String signedUrl = await supabase.storage.from(bucket).createSignedUrl(filePath, expiresIn);
+    return signedUrl;
+  } catch (e) {
+    print('Error creating signed URL: $e');
+    return null;
+  }
+}

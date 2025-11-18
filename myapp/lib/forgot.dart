@@ -85,12 +85,76 @@ class _ForgotPageState extends State<ForgotPage> with SingleTickerProviderStateM
     });
     
     try {
+      // Simple configuration - works with free Firebase
       await _auth.sendPasswordResetEmail(email: email);
-      Fluttertoast.showToast(msg: 'Password reset email sent');
-      await Future.delayed(const Duration(milliseconds: 500));
-      Navigator.pop(context);
+      
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.mark_email_read, color: Colors.green),
+                SizedBox(width: 10),
+                Text('Email Sent Successfully'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'A password reset link has been sent to:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  email,
+                  style: const TextStyle(color: Colors.deepPurple),
+                ),
+                const SizedBox(height: 16),
+                const Text('Please check:'),
+                const SizedBox(height: 8),
+                const Text('✓ Your inbox'),
+                const Text('✓ Spam/Junk folder'),
+                const Text('✓ Promotions tab (Gmail)'),
+                const SizedBox(height: 16),
+                const Text(
+                  'Note: The email may take a few minutes to arrive.',
+                  style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.grey),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context); // Close dialog
+                  Navigator.pop(context); // Go back to login
+                },
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
     } catch (e) {
-      Fluttertoast.showToast(msg: 'Error: $e');
+      String errorMessage = 'Error sending reset email';
+      if (e is FirebaseAuthException) {
+        switch (e.code) {
+          case 'user-not-found':
+            errorMessage = 'No account found with this email';
+            break;
+          case 'invalid-email':
+            errorMessage = 'Invalid email address';
+            break;
+          case 'too-many-requests':
+            errorMessage = 'Too many attempts. Please try again later';
+            break;
+          default:
+            errorMessage = 'Error: ${e.message}';
+        }
+      }
+      Fluttertoast.showToast(msg: errorMessage);
     } finally {
       if (mounted) {
         setState(() {

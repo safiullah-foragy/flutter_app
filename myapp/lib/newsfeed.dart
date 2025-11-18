@@ -197,6 +197,12 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       final Map<String, dynamic>? data = doc.data();
       if (data == null) return;
       userCache[userId] = data;
+      // Update all posts that belong to this user with fresh user_data
+      for (int i = 0; i < posts.length; i++) {
+        if (posts[i]['user_id'] == userId) {
+          posts[i]['user_data'] = data;
+        }
+      }
       if (mounted) setState(() {});
     }, onError: (_) {});
   }
@@ -269,6 +275,18 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
           String userId = postData['user_id'] ?? '';
           Map<String, dynamic>? postUserData = userCache[userId];
+          // If not in cache, fetch immediately
+          if (postUserData == null && userId.isNotEmpty) {
+            try {
+              final userDoc = await _firestore.collection('users').doc(userId).get();
+              if (userDoc.exists) {
+                postUserData = userDoc.data();
+                userCache[userId] = postUserData;
+              }
+            } catch (e) {
+              print('Error fetching user $userId: $e');
+            }
+          }
           // Attach listener (will populate cache and refresh UI when it arrives)
           _attachAuthorListener(userId);
 
@@ -938,13 +956,13 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       if (videoInitInProgress.contains(postId)) return; // avoid duplicate inits
       videoInitErrors.remove(postId);
       videoInitInProgress.add(postId);
-      // Prefer a signed Supabase URL up-front for Supabase-hosted videos to avoid 403/redirect latency.
+      // Always get a fresh signed URL for Supabase videos to prevent 400 errors from expired URLs
       String attemptUrl = url;
       if (url.contains('/storage/v1/object/public/')) {
-        final signedFirst = _resolvedVideoUrlCache[url] ?? await _trySignedSupabaseUrl(url);
-        if (signedFirst != null) {
-          attemptUrl = signedFirst;
-          _resolvedVideoUrlCache[url] = signedFirst;
+        final freshUrl = await _trySignedSupabaseUrl(url);
+        if (freshUrl != null) {
+          attemptUrl = freshUrl;
+          _resolvedVideoUrlCache[url] = freshUrl; // Cache the fresh URL
         }
       }
       VideoPlayerController vpc = VideoPlayerController.networkUrl(Uri.parse(attemptUrl));
@@ -1269,7 +1287,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   children: [
                     IconButton(
                       tooltip: 'Messages',
-                      icon: const Icon(Icons.message),
+                      icon: const Icon(Icons.forum_outlined),
                       onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MessagesPage())),
                     ),
                     if (unreadConversations > 0)
@@ -1296,7 +1314,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             ),
             IconButton(
               tooltip: 'Videos',
-              icon: const Icon(Icons.videocam),
+              icon: const Icon(Icons.play_circle_outline),
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const VideosPage())),
             ),
             IconButton(
@@ -1370,7 +1388,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                             tooltip: 'Add Photo',
                           ),
                           IconButton(
-                            icon: const Icon(Icons.video_library, size: 24),
+                            icon: const Icon(Icons.smart_display, size: 24),
                             onPressed: _pickVideo,
                             tooltip: 'Add Video',
                           ),

@@ -53,6 +53,8 @@ class _CallPageState extends State<CallPage> {
   bool _outgoingPlayerActive = false;
   bool _outgoingToneStarted = false;
   bool _isCaller = true;
+  bool _isJoining = false; // Track if currently joining to prevent duplicate joins
+  bool _shouldJoinAfterInit = false; // Track if we need to join after engine initialization completes
   // Video layout state
   Offset? _pipOffset; // position of PiP window
   bool _showLocalFull = false; // when true, show local full-screen and remote as PiP
@@ -119,7 +121,6 @@ class _CallPageState extends State<CallPage> {
         debugPrint('AgoraWeb: Remote user joined - uid: $remoteUid');
         setState(() {
           _remoteUids.add(remoteUid);
-          _joined = true;
         });
         _startElapsedTimer();
       });
@@ -156,6 +157,13 @@ class _CallPageState extends State<CallPage> {
 
     // Don't join channel yet - wait for call acceptance
     debugPrint('AgoraWeb: Initialization complete, waiting for call acceptance');
+    
+    // If we received 'accepted' before initialization, join now
+    if (_shouldJoinAfterInit && !_joined && !_isJoining) {
+      debugPrint('AgoraWeb: Performing deferred join after initialization...');
+      _shouldJoinAfterInit = false;
+      await _joinChannel();
+    }
   }
 
   /// Initialize Agora for Native platforms (Android/iOS)
@@ -193,6 +201,7 @@ class _CallPageState extends State<CallPage> {
       onJoinChannelSuccess: (RtcConnection conn, int elapsed) {
         debugPrint('Agora: Join channel SUCCESS - channel: ${conn.channelId}, localUid: ${conn.localUid}');
         setState(() => _joined = true);
+        _isJoining = false;
         _startElapsedTimer();
         _startCallForeground();
       },
@@ -252,11 +261,23 @@ class _CallPageState extends State<CallPage> {
 
     // Don't join channel yet - wait for call acceptance
     debugPrint('Agora: Initialization complete, waiting for call acceptance');
+    
+    // If we received 'accepted' before initialization, join now
+    if (_shouldJoinAfterInit && !_joined && !_isJoining) {
+      debugPrint('Agora: Performing deferred join after initialization...');
+      _shouldJoinAfterInit = false;
+      await _joinChannel();
+    }
   }
 
   // Join channel after call is accepted
   Future<void> _joinChannel() async {
-    if (_joined) return;
+    if (_joined || _isJoining) {
+      debugPrint('AgoraWeb: Skipping join - already joined or joining (_joined=$_joined, _isJoining=$_isJoining)');
+      return;
+    }
+    
+    _isJoining = true;
     
     if (kIsWeb) {
       // Web join
@@ -269,9 +290,14 @@ class _CallPageState extends State<CallPage> {
             uid: _localUid,
             enableVideo: widget.video,
           );
-          debugPrint('AgoraWeb: Joined channel successfully');
+          debugPrint('AgoraWeb: Join channel completed, setting _joined=true');
+          setState(() => _joined = true);
+          _isJoining = false;
+          _startElapsedTimer();
+          debugPrint('AgoraWeb: Joined channel successfully, _joined=$_joined');
         } catch (e) {
           debugPrint('AgoraWeb: Join channel error - $e');
+          _isJoining = false;
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text('Failed to join channel: $e'),
@@ -284,6 +310,7 @@ class _CallPageState extends State<CallPage> {
       if (_engine != null && _engineInitialized) {
         if (_token == null || _token!.isEmpty) {
           debugPrint('Agora: Token is empty, cannot join');
+          _isJoining = false;
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Agora token — cannot join channel')));
           }
@@ -300,7 +327,10 @@ class _CallPageState extends State<CallPage> {
             clientRoleType: ClientRoleType.clientRoleBroadcaster,
           ),
         );
+        // _isJoining will be reset in onJoinChannelSuccess callback
         debugPrint('Agora: joinChannel() called, waiting for onJoinChannelSuccess callback...');
+      } else {
+        _isJoining = false;
       }
     }
   }
@@ -368,7 +398,21 @@ class _CallPageState extends State<CallPage> {
     final id = widget.callSessionId;
     if (id == null) return;
     _callSessionSub = FirebaseFirestore.instance.collection('call_sessions').doc(id).snapshots().listen((doc) async {
-      if (!doc.exists) return;
+      if (!doc.exists) {
+        // Document deleted - treat as ended
+        debugPrint('Call session deleted - ending call');
+        _terminalReason ??= 'Call ended';
+        _stopOutgoingTone();
+        await _leaveChannel();
+        if (mounted) {
+          setState(() {});
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) Navigator.pop(context);
+          });
+        }
+        return;
+      }
+      
       final data = doc.data() ?? {};
       final status = data['status'] as String?;
       final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
@@ -378,7 +422,13 @@ class _CallPageState extends State<CallPage> {
         _isCaller = (data['caller_id'] == uid);
       }
       
-      debugPrint('Call session status: $status, isCaller: $_isCaller, joined: $_joined');
+      debugPrint('Call session status: $status, isCaller: $_isCaller, joined: $_joined, callStart: $_callStart, terminalReason: $_terminalReason');
+      
+      // If already in terminal state, ignore further updates
+      if (_terminalReason != null) {
+        debugPrint('Already in terminal state ($_terminalReason), ignoring status update');
+        return;
+      }
       
       // Start outgoing tone for caller only when ringing
       if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
@@ -386,41 +436,57 @@ class _CallPageState extends State<CallPage> {
         await _startOutgoingTone();
       }
       
-      // When call is accepted, stop ringtone and join channel
+      // When call is accepted, stop ringtone and join channel (caller & callee)
       if (status == 'accepted') {
         _stopOutgoingTone();
-        // Join channel only after acceptance and only once
-        if (!_joined && _engineInitialized) {
-          debugPrint('Call accepted, joining channel...');
+
+        // For debugging: see which side is reacting
+        debugPrint('Call accepted snapshot: isCaller=$_isCaller, joined=$_joined, isJoining=$_isJoining, engineInitialized=$_engineInitialized');
+
+        // Join channel only after acceptance and only once, on both sides
+        if (!_joined && !_isJoining && _engineInitialized) {
+          debugPrint('Call accepted (isCaller=$_isCaller), joining channel...');
           await _joinChannel();
+        } else if (!_engineInitialized && !_joined && !_isJoining) {
+          // Engine not ready yet, defer join until initialization completes
+          debugPrint('Call accepted but engine not initialized yet, deferring join...');
+          _shouldJoinAfterInit = true;
+        } else {
+          debugPrint('Call accepted but skipping join (_joined=$_joined, _isJoining=$_isJoining, _engineInitialized=$_engineInitialized)');
         }
       } else if (status == 'rejected') {
-        _terminalReason ??= 'Call rejected';
+        debugPrint('Call rejected - closing immediately');
+        _terminalReason = 'Call rejected';
         _stopOutgoingTone();
         await _leaveChannel();
-        setState(() {});
-        // Auto-close after 2 seconds
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) Navigator.pop(context);
-        });
+        if (mounted) {
+          setState(() {});
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) Navigator.pop(context);
+          });
+        }
       } else if (status == 'ended') {
-        _terminalReason ??= 'Call ended';
+        debugPrint('Call ended - closing immediately');
+        _terminalReason = 'Call ended';
         _stopOutgoingTone();
         await _leaveChannel();
-        setState(() {});
-        // Auto-close after 2 seconds
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) Navigator.pop(context);
-        });
+        if (mounted) {
+          setState(() {});
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) Navigator.pop(context);
+          });
+        }
       } else if (status == 'missed') {
-        _terminalReason ??= 'Missed call';
+        debugPrint('Call missed - closing immediately');
+        _terminalReason = 'Missed call';
         _stopOutgoingTone();
         await _leaveChannel();
-        setState(() {});
-        // Auto-close after 2 seconds
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) Navigator.pop(context);
-        });
+        if (mounted) {
+          setState(() {});
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) Navigator.pop(context);
+          });
+        }
       }
     });
   }

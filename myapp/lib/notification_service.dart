@@ -33,16 +33,18 @@ class NotificationService {
       description: 'Message notifications',
       importance: Importance.high,
       playSound: true,
+      sound: RawResourceAndroidNotificationSound('notification'),
       enableVibration: true,
     );
 
-    // Call notification channel (max importance, full screen intent)
+    // Call notification channel (max importance, full screen intent, with sound)
     const AndroidNotificationChannel callChannel = AndroidNotificationChannel(
       'calls',
       'Calls',
       description: 'Incoming call notifications',
       importance: Importance.max,
       playSound: true,
+      sound: RawResourceAndroidNotificationSound('ringtone'),
       enableVibration: true,
     );
 
@@ -66,10 +68,7 @@ class NotificationService {
   }) async {
     if (kIsWeb) return;
 
-    // Always play notification sound
-    await _playNotificationSound(defaultMessageSound);
-
-    // Show notification
+    // Show notification with channel sound
     final payload = 'convId=$conversationId&otherId=$otherUserId';
     await _flnp.show(
       conversationId.hashCode,
@@ -82,7 +81,8 @@ class NotificationService {
           channelDescription: 'Message notifications',
           importance: Importance.high,
           priority: Priority.high,
-          playSound: false, // We handle sound ourselves
+          playSound: true,
+          sound: RawResourceAndroidNotificationSound('notification'),
           enableVibration: true,
         ),
       ),
@@ -101,7 +101,7 @@ class NotificationService {
   }) async {
     if (kIsWeb) return;
 
-    // Always play call ringtone
+    // Play call ringtone using audio player for looping
     await _playCallRingtone(defaultCallRingtone);
 
     // Show full-screen call notification
@@ -118,7 +118,8 @@ class NotificationService {
           channelDescription: 'Incoming call notifications',
           importance: Importance.max,
           priority: Priority.max,
-          playSound: false, // We handle sound ourselves
+          playSound: true,
+          sound: RawResourceAndroidNotificationSound('ringtone'),
           enableVibration: true,
           fullScreenIntent: true,
           category: AndroidNotificationCategory.call,
@@ -134,42 +135,7 @@ class NotificationService {
     );
   }
 
-  /// Play notification sound once
-  Future<void> _playNotificationSound(String assetPath) async {
-    try {
-      await _ringtonePlayer?.stop();
-      await _ringtonePlayer?.dispose();
-      
-      _ringtonePlayer = AudioPlayer();
-      
-      // Configure for notification sound
-      await _ringtonePlayer!.setAudioContext(AudioContext(
-        android: const AudioContextAndroid(
-          isSpeakerphoneOn: false,
-          contentType: AndroidContentType.sonification,
-          usageType: AndroidUsageType.notification,
-          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
-        ),
-      ));
-      
-      await _ringtonePlayer!.setReleaseMode(ReleaseMode.stop);
-      await _ringtonePlayer!.setVolume(1.0);
-      
-      // Strip 'assets/' prefix for AssetSource
-      String strippedPath = assetPath.replaceFirst('assets/', '');
-      await _ringtonePlayer!.play(AssetSource(strippedPath));
-      
-      // Auto-dispose after completion
-      _ringtonePlayer!.onPlayerComplete.first.then((_) {
-        _ringtonePlayer?.dispose();
-        _ringtonePlayer = null;
-      });
-    } catch (e) {
-      debugPrint('Error playing notification sound: $e');
-    }
-  }
-
-  /// Play call ringtone (looping)
+  /// Play call ringtone (looping) - used when app is in foreground
   Future<void> _playCallRingtone(String assetPath) async {
     try {
       debugPrint('=== Starting call ringtone playback ===');
@@ -204,6 +170,30 @@ class NotificationService {
     } catch (e, stackTrace) {
       debugPrint('!!! Error playing call ringtone: $e');
       debugPrint('Stack trace: $stackTrace');
+    }
+  }
+
+  /// Play message notification sound once
+  Future<void> playMessageSound() async {
+    try {
+      debugPrint('=== Playing message notification sound ===');
+      final player = AudioPlayer();
+      
+      // Set volume first
+      await player.setVolume(0.5);
+      debugPrint('Volume set to 0.5');
+      
+      // Play the sound
+      await player.play(AssetSource('mp3 file/Iphone-Notification.mp3'));
+      debugPrint('Message sound playing');
+      
+      // Auto-dispose after completion
+      player.onPlayerComplete.first.then((_) {
+        debugPrint('Message sound completed, disposing player');
+        player.dispose();
+      });
+    } catch (e) {
+      debugPrint('!!! Error playing message notification sound: $e');
     }
   }
 

@@ -51,9 +51,11 @@ exports.onMessageCreated = functions.firestore
         body: text && text.length > 0 ? text : 'Sent you a message',
       },
       data: {
+        type: 'message',
         conversationId: conversationId,
         otherUserId: senderId,
         senderName: senderName,
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
       },
     };
 
@@ -67,7 +69,17 @@ exports.onMessageCreated = functions.firestore
             priority: 'high',
             notification: {
               channelId: 'messages',
+              sound: 'default',
+              priority: 'high',
               clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+                badge: 1,
+              },
             },
           },
         });
@@ -103,7 +115,17 @@ exports.onMessageCreated = functions.firestore
             priority: 'high',
             notification: {
               channelId: 'messages',
+              sound: 'default',
+              priority: 'high',
               clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+                badge: 1,
+              },
             },
           },
         }));
@@ -238,23 +260,65 @@ exports.onCallSessionCreated = functions.firestore
       callee_id: calleeId,
       video: video ? '1' : '0',
       call_session_id: context.params.sessionId,
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    };
+
+    const notification = {
+      title: `Incoming ${video ? 'Video' : 'Audio'} Call`,
+      body: `${callerName} is calling you`,
     };
 
     try {
       if (tokens.length > 0) {
         await admin.messaging().sendEachForMulticast({
           tokens,
+          notification: notification,
           data: payloadData,
           android: {
             priority: 'high',
+            notification: {
+              channelId: 'calls',
+              sound: 'default',
+              priority: 'max',
+              clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+              tag: 'call_' + context.params.sessionId,
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+                badge: 1,
+                category: 'CALL_INVITE',
+              },
+            },
           },
         });
       } else {
         // Fallback to per-user topic
         await admin.messaging().send({
           topic: `user_${calleeId}`,
+          notification: notification,
           data: payloadData,
-          android: { priority: 'high' },
+          android: {
+            priority: 'high',
+            notification: {
+              channelId: 'calls',
+              sound: 'default',
+              priority: 'max',
+              clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+              tag: 'call_' + context.params.sessionId,
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+                badge: 1,
+                category: 'CALL_INVITE',
+              },
+            },
+          },
         });
       }
     } catch (e) {

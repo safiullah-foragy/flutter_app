@@ -1,5 +1,6 @@
 import 'dart:io' show File; // Used on mobile/desktop only
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/material.dart';
@@ -9,13 +10,17 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'app_cache_manager.dart';
 import 'supabase.dart' as sb;
 import 'videos.dart';
+import 'document_viewer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:file_picker/file_picker.dart';
+import 'file_picker_web.dart' if (dart.library.io) 'file_picker_stub.dart' as web_picker;
 // import 'newsfeed.dart'; // No direct usage here
 import 'see_profile_from_newsfeed.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'background_tasks.dart';
 import 'agora_call_page.dart';
@@ -767,17 +772,48 @@ class _ChatPageState extends State<ChatPage> {
   final AudioRecorder _recorder = AudioRecorder();
   bool _isRecording = false;
   final AudioPlayer _audioPlayer = AudioPlayer();
+  final AudioPlayer _notificationPlayer = AudioPlayer();
   String? _playingMessageId;
   StreamSubscription<Duration>? _posSub;
+  int _previousMessageCount = 0;
+
+  // Chat customization settings
+  double _messageFontSize = 14.0;
+  double _tagFontSize = 10.0;
+  Color _myBubbleColor = Colors.blue;
+  Color _sentTagColor = Colors.white70;
+  Color _seenTagColor = const Color.fromARGB(255, 238, 3, 3);
 
   @override
   void initState() {
     super.initState();
     _markRead();
+    _loadChatSettings();
+    _configureNotificationPlayer();
     // Initial scroll will be handled by StreamBuilder's postFrameCallback
     _posSub = _audioPlayer.onPositionChanged.listen((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _loadChatSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _messageFontSize = prefs.getDouble('chat_message_font_size') ?? 14.0;
+      _tagFontSize = prefs.getDouble('chat_tag_font_size') ?? 10.0;
+      _myBubbleColor = Color(prefs.getInt('chat_bubble_color') ?? Colors.blue.value);
+      _sentTagColor = Color(prefs.getInt('chat_sent_tag_color') ?? Colors.white70.value);
+      _seenTagColor = Color(prefs.getInt('chat_seen_tag_color') ?? const Color.fromARGB(255, 238, 3, 3).value);
+    });
+  }
+
+  Future<void> _saveChatSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('chat_message_font_size', _messageFontSize);
+    await prefs.setDouble('chat_tag_font_size', _tagFontSize);
+    await prefs.setInt('chat_bubble_color', _myBubbleColor.value);
+    await prefs.setInt('chat_sent_tag_color', _sentTagColor.value);
+    await prefs.setInt('chat_seen_tag_color', _seenTagColor.value);
   }
 
   void _scrollToBottom() {
@@ -786,6 +822,41 @@ class _ChatPageState extends State<ChatPage> {
       if (_scrollController.position.maxScrollExtent > 0) {
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
+    }
+  }
+
+  Future<void> _configureNotificationPlayer() async {
+    try {
+      // Configure audio player to use system notification volume
+      await _notificationPlayer.setAudioContext(
+        AudioContext(
+          iOS: AudioContextIOS(
+            category: AVAudioSessionCategory.ambient,
+            options: {
+              AVAudioSessionOptions.mixWithOthers,
+            },
+          ),
+          android: AudioContextAndroid(
+            isSpeakerphoneOn: false,
+            stayAwake: false,
+            contentType: AndroidContentType.sonification,
+            usageType: AndroidUsageType.notification,
+            audioFocus: AndroidAudioFocus.none,
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Failed to configure notification player: $e');
+    }
+  }
+
+  Future<void> _playNotificationSound() async {
+    try {
+      await _notificationPlayer.stop();
+      await _notificationPlayer.setVolume(0.3); // Set to 30% volume to respect system notification level
+      await _notificationPlayer.play(AssetSource('mp3 file/Iphone-Notification.mp3'));
+    } catch (e) {
+      debugPrint('Failed to play notification sound: $e');
     }
   }
 
@@ -807,6 +878,7 @@ class _ChatPageState extends State<ChatPage> {
     _scrollController.dispose();
     _posSub?.cancel();
     _audioPlayer.dispose();
+    _notificationPlayer.dispose();
     super.dispose();
   }
 
@@ -1191,6 +1263,246 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  Future<void> _showAttachmentOptions() async {
+    final choice = await showModalBottomSheet<String?>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Wrap(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.videocam, color: Colors.blue),
+                title: const Text('Video'),
+                onTap: () => Navigator.pop(context, 'video'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.insert_drive_file, color: Colors.orange),
+                title: const Text('Document'),
+                onTap: () => Navigator.pop(context, 'document'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                title: const Text('PDF'),
+                onTap: () => Navigator.pop(context, 'pdf'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.text_snippet, color: Colors.green),
+                title: const Text('Text File'),
+                onTap: () => Navigator.pop(context, 'txt'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (choice == null) return;
+
+    switch (choice) {
+      case 'video':
+        await _pickAndSendVideo();
+        break;
+      case 'document':
+        await _pickAndSendDocument('document');
+        break;
+      case 'pdf':
+        await _pickAndSendDocument('pdf');
+        break;
+      case 'txt':
+        await _pickAndSendDocument('txt');
+        break;
+    }
+  }
+
+  Future<void> _pickAndSendDocument(String docType) async {
+    try {
+      debugPrint('📄 Starting _pickAndSendDocument for docType: $docType');
+      
+      // Determine file type filter and bucket based on docType
+      List<String> allowedExtensions;
+      String bucket;
+      
+      if (docType == 'pdf') {
+        allowedExtensions = ['pdf'];
+        bucket = 'message-pdf';
+      } else if (docType == 'txt') {
+        allowedExtensions = ['txt'];
+        bucket = 'message-txt';
+      } else {
+        allowedExtensions = ['doc', 'docx', 'pdf', 'txt'];
+        bucket = 'message-docs';
+      }
+
+      // Pick file using file_picker
+      debugPrint('📄 Starting file picker for docType: $docType, extensions: $allowedExtensions, bucket: $bucket');
+      debugPrint('📄 Platform check: kIsWeb = $kIsWeb');
+      
+      if (kIsWeb) {
+        // Web: Use HTML input element directly to avoid plugin issues
+        debugPrint('📄 Using HTML file input for web');
+        try {
+          final html = await web_picker.pickFileWeb(allowedExtensions);
+          if (html == null) {
+            debugPrint('📄 File picker cancelled');
+            return;
+          }
+          
+          final fileName = html['name'] as String;
+          final bytes = html['bytes'] as Uint8List;
+          
+          debugPrint('📄 File picked: $fileName, size: ${bytes.length} bytes');
+          setState(() => _sending = true);
+          
+          try {
+            debugPrint('📄 Starting upload to Supabase bucket: $bucket');
+            final url = await sb.uploadMessageDocumentBytes(bytes, fileName: fileName, bucket: bucket);
+            debugPrint('📄 Upload successful! URL: $url');
+            
+            await _sendMessage(fileUrl: url, fileType: docType, text: fileName);
+            
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Document "$fileName" sent successfully')),
+              );
+            }
+          } catch (e) {
+            debugPrint('📄 Document upload error: $e');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to upload document: ${e.toString()}')),
+              );
+            }
+          } finally {
+            setState(() => _sending = false);
+          }
+        } catch (e) {
+          debugPrint('📄 Web file picker error: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('File picker error: ${e.toString()}')),
+            );
+          }
+        }
+        return;
+      }
+      
+      // Mobile/Desktop: Use file_picker plugin
+      FilePickerResult? result;
+      try {
+        result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: allowedExtensions,
+          allowMultiple: false,
+        );
+      } catch (pickerError) {
+        debugPrint('📄 FilePicker.platform error: $pickerError');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('File picker error: ${pickerError.toString()}. Try refreshing the page.')),
+          );
+        }
+        return;
+      }
+      
+      if (result == null || result.files.isEmpty) {
+        debugPrint('📄 File picker cancelled or no file selected');
+        return;
+      }
+      
+      debugPrint('📄 File picked: ${result.files.first.name}, size: ${result.files.first.size} bytes');
+      setState(() => _sending = true);
+      
+      final pickedFile = result.files.first;
+      final fileName = pickedFile.name;
+      
+      String url = '';
+      try {
+        debugPrint('📄 Starting upload to Supabase bucket: $bucket');
+        if (kIsWeb) {
+          // Web: use bytes
+          final bytes = pickedFile.bytes;
+          if (bytes == null) {
+            throw Exception('Failed to read file bytes');
+          }
+          debugPrint('📄 Web: uploading ${bytes.length} bytes');
+          url = await sb.uploadMessageDocumentBytes(bytes, fileName: fileName, bucket: bucket);
+        } else {
+          // Mobile/Desktop: use file path
+          final filePath = pickedFile.path;
+          if (filePath == null) {
+            throw Exception('Failed to get file path');
+          }
+          debugPrint('📄 Mobile: uploading from path: $filePath');
+          final file = File(filePath);
+          url = await sb.uploadMessageDocument(file, fileName: fileName, bucket: bucket);
+        }
+        
+        debugPrint('📄 Upload successful! URL: $url');
+        // Send with filename as text so it displays in the message
+        await _sendMessage(fileUrl: url, fileType: docType, text: fileName);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Document "$fileName" sent successfully')),
+          );
+        }
+      } catch (e) {
+        debugPrint('📄 Document upload error: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to upload document: ${e.toString()}')),
+          );
+        }
+      } finally {
+        setState(() => _sending = false);
+      }
+    } catch (e) {
+      debugPrint('Document picker error: $e');
+      if (mounted) {
+        setState(() => _sending = false);
+      }
+    }
+  }
+
+  Future<void> _openDocument(String url, String fileName, String fileType) async {
+    try {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DocumentViewer(
+            documentUrl: url,
+            fileName: fileName,
+            fileType: fileType,
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Error opening document: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error opening document: ${e.toString()}')),
+        );
+      }
+    }
+  }
+
+  String _getFileTypeLabel(String fileType) {
+    switch (fileType) {
+      case 'pdf':
+        return 'PDF Document';
+      case 'txt':
+        return 'Text File';
+      case 'document':
+        return 'Document';
+      default:
+        return 'File';
+    }
+  }
+
   Widget _buildAudioBubble(String messageId, String url, bool isMe) {
     final isPlaying = _playingMessageId == messageId;
     return Row(
@@ -1237,6 +1549,233 @@ class _ChatPageState extends State<ChatPage> {
     if (typing) {
       _typingTimer = Timer(const Duration(seconds: 5), () => doc.update({'typing.$uid': false}));
     }
+  }
+
+  void _showChatSettings() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Chat Settings'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Message Font Option
+            ListTile(
+              leading: const Icon(Icons.text_fields),
+              title: const Text('Message Font'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.pop(context);
+                _showFontSizeDialog('message');
+              },
+            ),
+            const Divider(),
+            
+            // Tag Font Option
+            ListTile(
+              leading: const Icon(Icons.label),
+              title: const Text('Tag Font (Sent/Seen)'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.pop(context);
+                _showFontSizeDialog('tag');
+              },
+            ),
+            const Divider(),
+            
+            // Bubble Color Option
+            ListTile(
+              leading: Icon(Icons.color_lens, color: _myBubbleColor),
+              title: const Text('Message Bubble Color'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.pop(context);
+                _showColorDialog('bubble');
+              },
+            ),
+            const Divider(),
+            
+            // Sent Tag Color Option
+            ListTile(
+              leading: Icon(Icons.access_time, color: _sentTagColor),
+              title: const Text('Sent Tag Color'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.pop(context);
+                _showColorDialog('sent');
+              },
+            ),
+            const Divider(),
+            
+            // Seen Tag Color Option
+            ListTile(
+              leading: Icon(Icons.done_all, color: _seenTagColor),
+              title: const Text('Seen Tag Color'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.pop(context);
+                _showColorDialog('seen');
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showFontSizeDialog(String type) {
+    double currentSize = type == 'message' ? _messageFontSize : _tagFontSize;
+    double tempSize = currentSize;
+    
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Text(type == 'message' ? 'Message Font Size' : 'Tag Font Size'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Size: ${tempSize.toInt()}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                Slider(
+                  value: tempSize,
+                  min: type == 'message' ? 10 : 8,
+                  max: type == 'message' ? 24 : 16,
+                  divisions: type == 'message' ? 14 : 8,
+                  label: tempSize.toInt().toString(),
+                  onChanged: (value) {
+                    setDialogState(() {
+                      tempSize = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Preview Text',
+                  style: TextStyle(fontSize: tempSize),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  setState(() {
+                    if (type == 'message') {
+                      _messageFontSize = tempSize;
+                    } else {
+                      _tagFontSize = tempSize;
+                    }
+                  });
+                  _saveChatSettings();
+                  Navigator.pop(context);
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _showColorDialog(String type) {
+    List<Color> colors = [];
+    String title = '';
+    
+    if (type == 'bubble') {
+      title = 'Message Bubble Color';
+      colors = [
+        Colors.blue, Colors.green, Colors.purple, Colors.orange,
+        Colors.teal, Colors.pink, Colors.indigo, Colors.deepOrange,
+        Colors.cyan, Colors.amber, Colors.brown, Colors.blueGrey,
+      ];
+    } else if (type == 'sent') {
+      title = 'Sent Tag Color';
+      colors = [
+        Colors.white70, Colors.white, Colors.grey[300]!,
+        Colors.blue[200]!, Colors.green[200]!, Colors.purple[200]!,
+        Colors.orange[200]!, Colors.teal[200]!, Colors.pink[200]!,
+        Colors.yellow[200]!, Colors.cyan[200]!, Colors.amber[200]!,
+      ];
+    } else {
+      title = 'Seen Tag Color';
+      colors = [
+        const Color.fromARGB(255, 238, 3, 3), Colors.red, Colors.green,
+        Colors.blue, Colors.orange, Colors.purple, Colors.teal,
+        Colors.pink, Colors.indigo, Colors.amber, Colors.cyan, Colors.lime,
+      ];
+    }
+    
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Text(title),
+            content: Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: colors.map((color) {
+                bool isSelected = false;
+                if (type == 'bubble') {
+                  isSelected = _myBubbleColor.value == color.value;
+                } else if (type == 'sent') {
+                  isSelected = _sentTagColor.value == color.value;
+                } else {
+                  isSelected = _seenTagColor.value == color.value;
+                }
+                
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      if (type == 'bubble') {
+                        _myBubbleColor = color;
+                      } else if (type == 'sent') {
+                        _sentTagColor = color;
+                      } else {
+                        _seenTagColor = color;
+                      }
+                    });
+                    _saveChatSettings();
+                    Navigator.pop(context);
+                  },
+                  child: Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isSelected ? Colors.black : Colors.grey[300]!,
+                        width: isSelected ? 3 : 1,
+                      ),
+                    ),
+                    child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 24) : null,
+                  ),
+                );
+              }).toList(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -1324,6 +1863,11 @@ class _ChatPageState extends State<ChatPage> {
               );
             },
           ),
+          IconButton(
+            tooltip: 'Chat Settings',
+            icon: const Icon(Icons.menu),
+            onPressed: () => _showChatSettings(),
+          ),
 
         ],
       ),
@@ -1359,6 +1903,17 @@ class _ChatPageState extends State<ChatPage> {
                     if (!snap.hasData) return const Center(child: CircularProgressIndicator());
 
                     final docs = snap.data!.docs;
+                    
+                    // Play notification sound when new message arrives from other user
+                    if (_previousMessageCount > 0 && docs.length > _previousMessageCount) {
+                      final newMessage = docs.last;
+                      final newMessageData = newMessage.data() as Map<String, dynamic>? ?? {};
+                      final senderId = newMessageData['sender_id'];
+                      if (senderId != uid) {
+                        _playNotificationSound();
+                      }
+                    }
+                    _previousMessageCount = docs.length;
                     
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       _scrollToBottom();
@@ -1407,7 +1962,7 @@ class _ChatPageState extends State<ChatPage> {
                                         margin: const EdgeInsets.symmetric(vertical: 4),
                                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                                         decoration: BoxDecoration(
-                                          color: isMe ? Colors.blue : Colors.grey[200],
+                                          color: isMe ? _myBubbleColor : Colors.grey[200],
                                           borderRadius: BorderRadius.only(
                                             topLeft: Radius.circular(isMe ? 16 : 0),
                                             topRight: Radius.circular(isMe ? 0 : 16),
@@ -1453,11 +2008,15 @@ class _ChatPageState extends State<ChatPage> {
                                             if (fileUrl.isNotEmpty && fileType == 'video')
                                               GestureDetector(
                                                 onTap: () {
+                                                  debugPrint('🎬 Opening video: $fileUrl');
+                                                  debugPrint('🎬 Video text: $text');
+                                                  final videoData = {'video_url': fileUrl, 'text': text.isNotEmpty ? text : 'Video'};
+                                                  debugPrint('🎬 Video data: $videoData');
                                                   Navigator.push(
                                                     context,
                                                     MaterialPageRoute(
                                                       builder: (_) => VideoPlayerScreen(
-                                                        videos: [{'video_url': fileUrl, 'text': text}],
+                                                        videos: [videoData],
                                                         startIndex: 0,
                                                       ),
                                                     ),
@@ -1468,14 +2027,80 @@ class _ChatPageState extends State<ChatPage> {
                                                   width: 200,
                                                   height: 120,
                                                   decoration: BoxDecoration(
-                                                    color: Colors.black12,
+                                                    color: Colors.black87,
                                                     borderRadius: BorderRadius.circular(8),
                                                   ),
-                                                  child: Column(
-                                                    mainAxisAlignment: MainAxisAlignment.center,
+                                                  child: Stack(
+                                                    alignment: Alignment.center,
                                                     children: [
-                                                      const Icon(Icons.play_arrow, size: 40, color: Colors.white),
-                                                      Text('Video', style: TextStyle(color: Colors.white)),
+                                                      const Icon(Icons.play_circle_filled, size: 50, color: Colors.white),
+                                                      Positioned(
+                                                        bottom: 8,
+                                                        child: Text(
+                                                          text.isNotEmpty ? text : 'Video',
+                                                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            if (fileUrl.isNotEmpty && (fileType == 'document' || fileType == 'pdf' || fileType == 'txt'))
+                                              GestureDetector(
+                                                onTap: () => _openDocument(
+                                                  fileUrl,
+                                                  text.isNotEmpty ? text : 'Document',
+                                                  fileType,
+                                                ),
+                                                child: Container(
+                                                  padding: const EdgeInsets.all(12),
+                                                  decoration: BoxDecoration(
+                                                    color: isMe ? Colors.white.withOpacity(0.2) : Colors.grey[300],
+                                                    borderRadius: BorderRadius.circular(8),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                        fileType == 'pdf' ? Icons.picture_as_pdf : 
+                                                        fileType == 'txt' ? Icons.text_snippet : Icons.description,
+                                                        color: isMe ? Colors.white : Colors.black87,
+                                                        size: 32,
+                                                      ),
+                                                      const SizedBox(width: 12),
+                                                      Flexible(
+                                                        child: Column(
+                                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          children: [
+                                                            Text(
+                                                              text.isNotEmpty ? text : _getFileTypeLabel(fileType),
+                                                              style: TextStyle(
+                                                                color: isMe ? Colors.white : Colors.black87,
+                                                                fontWeight: FontWeight.w500,
+                                                              ),
+                                                              maxLines: 2,
+                                                              overflow: TextOverflow.ellipsis,
+                                                            ),
+                                                            if (text.isNotEmpty)
+                                                              Text(
+                                                                _getFileTypeLabel(fileType),
+                                                                style: TextStyle(
+                                                                  color: isMe ? Colors.white70 : Colors.black54,
+                                                                  fontSize: 12,
+                                                                ),
+                                                              ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 8),
+                                                      Icon(
+                                                        Icons.download,
+                                                        color: isMe ? Colors.white70 : Colors.black54,
+                                                        size: 20,
+                                                      ),
                                                     ],
                                                   ),
                                                 ),
@@ -1483,7 +2108,7 @@ class _ChatPageState extends State<ChatPage> {
                                             if (text.isNotEmpty) 
                                               Padding(
                                                 padding: const EdgeInsets.only(bottom: 4.0),
-                                                child: Text(text, style: TextStyle(color: isMe ? Colors.white : Colors.black)),
+                                                child: Text(text, style: TextStyle(color: isMe ? Colors.white : Colors.black, fontSize: _messageFontSize)),
                                               ),
                                             if (fileType == 'call_audio' || fileType == 'call_video')
                                               Padding(
@@ -1536,61 +2161,80 @@ class _ChatPageState extends State<ChatPage> {
                                                   style: TextStyle(fontSize: 10, color: isMe ? Colors.white70 : Colors.grey),
                                                 ),
                                               ),
-                                            // FIXED: Reactions now properly persist and display
-                                            if ((data['reactions'] as Map<String, dynamic>?)?.isNotEmpty ?? false)
-                                              Padding(
-                                                padding: const EdgeInsets.only(top: 4.0),
-                                                child: Wrap(
-                                                  spacing: 6,
-                                                  children: (data['reactions'] as Map<String, dynamic>).entries.map((e) {
-                                                    final emoji = e.key;
-                                                    final users = List<String>.from(e.value ?? <String>[]);
-                                                    final hasMyReaction = users.contains(uid);
-                                                    return Container(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                      decoration: BoxDecoration(
-                                                        color: hasMyReaction ? Colors.blue.shade100 : Colors.white.withOpacity(0.8),
-                                                        borderRadius: BorderRadius.circular(12),
-                                                        border: Border.all(
-                                                          color: hasMyReaction ? Colors.blue : Colors.transparent,
-                                                          width: 1,
-                                                        ),
-                                                      ),
-                                                      child: Row(
-                                                        mainAxisSize: MainAxisSize.min,
-                                                        children: [
-                                                          Text(emoji),
-                                                          const SizedBox(width: 4),
-                                                          Text(users.length.toString()),
-                                                        ],
-                                                      ),
-                                                    );
-                                                  }).toList(),
-                                                ),
-                                              ),
                                             Row(
                                               mainAxisSize: MainAxisSize.min,
                                               children: [
                                                 Text(
-                                                  _formatMessageTimestamp(timestamp),
-                                                  style: TextStyle(fontSize: 10, color: isMe ? Colors.white70 : Colors.grey),
+                                                  'Sent: ${_formatMessageTimestamp(timestamp)}',
+                                                  style: TextStyle(fontSize: _tagFontSize, color: isMe ? _sentTagColor : Colors.grey),
                                                 ),
-                                                if (isMe)
-                                                  Icon(
-                                                    pending ? Icons.schedule : Icons.done_all,
-                                                    size: 16,
-                                                    color: pending
-                                                        ? (isMe ? Colors.white70 : Colors.grey)
-                                                        : (seen
-                                                            ? const Color.fromARGB(255, 175, 135, 76)
-                                                            : const Color.fromARGB(255, 235, 238, 237)),
-                                                  ),
+                                                if (isMe) ...[
+                                                  const SizedBox(width: 8),
+                                                  if (pending)
+                                                    Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Icon(Icons.schedule, size: _tagFontSize + 2, color: isMe ? _sentTagColor : Colors.grey),
+                                                        const SizedBox(width: 4),
+                                                        Text(
+                                                          'Sending...',
+                                                          style: TextStyle(fontSize: _tagFontSize, color: isMe ? _sentTagColor : Colors.grey),
+                                                        ),
+                                                      ],
+                                                    )
+                                                  else if (seen)
+                                                    Text(
+                                                      'Seen: ${_formatMessageTimestamp(otherLastRead)}',
+                                                      style: TextStyle(fontSize: _tagFontSize, color: _seenTagColor),
+                                                    )
+                                                  else
+                                                    Text(
+                                                      'Unseen',
+                                                      style: TextStyle(fontSize: _tagFontSize, color: isMe ? _sentTagColor.withOpacity(0.7) : Colors.grey[400]),
+                                                    ),
+                                                ],
                                               ],
                                             ),
                                           ],
                                         ),
                                       ),
                                     ),
+                                    // Reactions outside bubble on the right side
+                                    if ((data['reactions'] as Map<String, dynamic>?)?.isNotEmpty ?? false)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2.0),
+                                        child: Wrap(
+                                          spacing: 6,
+                                          alignment: WrapAlignment.end,
+                                          children: (data['reactions'] as Map<String, dynamic>).entries.map((e) {
+                                            final emoji = e.key;
+                                            final users = List<String>.from(e.value ?? <String>[]);
+                                            final hasMyReaction = users.contains(uid);
+                                            return Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: hasMyReaction ? Colors.blue.shade100 : Colors.grey[200],
+                                                borderRadius: BorderRadius.circular(12),
+                                                border: Border.all(
+                                                  color: hasMyReaction ? Colors.blue : Colors.grey[400]!,
+                                                  width: 1,
+                                                ),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Text(emoji),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    users.length.toString(),
+                                                    style: const TextStyle(fontSize: 12),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ),
+                                      ),
                                   ],
                                 ),
                               );
@@ -1610,17 +2254,17 @@ class _ChatPageState extends State<ChatPage> {
             child: Row(
               children: [
                 IconButton(
+                  icon: const Icon(Icons.add_circle_outline),
+                  onPressed: _sending ? null : _showAttachmentOptions,
+                ),
+                IconButton(
                   icon: const Icon(Icons.photo), 
                   onPressed: _sending ? null : _pickAndSendImage
                 ),
                 IconButton(
-                  icon: const Icon(Icons.videocam), 
-                  onPressed: _sending ? null : _pickAndSendVideo
-                ),
-                IconButton(
                   tooltip: _isRecording ? 'Stop' : 'Hold to record voice',
                   icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic),
-                  color: _isRecording ? Colors.red : null,
+                  color: _isRecording ? const Color.fromARGB(255, 188, 58, 49) : null,
                   onPressed: _sending ? null : _toggleRecord,
                 ),
                 Expanded(
