@@ -35,7 +35,7 @@ class _LoginPageState extends State<LoginPage> {
         password: passwordController.text,
       );
       // Rely on AuthGate (authStateChanges) to navigate after a successful sign-in
-      Fluttertoast.showToast(msg: 'Welcome back');
+      Fluttertoast.showToast(msg: 'Welcome to Connectify');
       // If this LoginPage was pushed on top of AuthGate (e.g., from logout flow),
       // pop it so the underlying AuthGate can reveal Home.
       if (mounted && Navigator.canPop(context)) {
@@ -86,7 +86,7 @@ class _LoginPageState extends State<LoginPage> {
                   children: [
                     const SizedBox(height: 20),
                     const Text(
-                      'Welcome Back',
+                      'Welcome to Connectify',
                       style: TextStyle(
                         fontSize: 26,
                         fontWeight: FontWeight.bold,

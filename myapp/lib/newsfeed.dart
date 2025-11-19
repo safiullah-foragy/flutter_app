@@ -19,6 +19,7 @@ import 'jobs.dart';
 import 'app_cache_manager.dart';
 import 'background_tasks.dart';
 import 'notifications.dart';
+import 'all_users_list.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -1261,6 +1262,14 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
               tooltip: 'Toggle composer',
               icon: Icon(_showComposer ? Icons.expand_less : Icons.expand_more),
               onPressed: () => setState(() => _showComposer = !_showComposer),
+            ),
+            IconButton(
+              tooltip: 'All Users',
+              icon: const Icon(Icons.people_outline),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AllUsersListPage()),
+              ),
             ),
             // Messages icon with unread conversations badge
             StreamBuilder<QuerySnapshot>(
