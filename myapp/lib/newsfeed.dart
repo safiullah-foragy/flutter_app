@@ -20,6 +20,7 @@ import 'app_cache_manager.dart';
 import 'background_tasks.dart';
 import 'notifications.dart';
 import 'all_users_list.dart';
+import 'ai_image_chatbot_page.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -1217,6 +1218,15 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           foregroundColor: Colors.white,
           toolbarHeight: 48,
           actions: [
+            // AI Image Recognition Chatbot
+            IconButton(
+              tooltip: 'AI Image Recognition',
+              icon: const Icon(Icons.psychology),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AIImageChatbotPage()),
+              ),
+            ),
             // Notifications icon with unread badge
             StreamBuilder<QuerySnapshot>(
               stream: (_auth.currentUser == null)
