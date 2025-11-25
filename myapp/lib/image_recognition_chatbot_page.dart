@@ -21,8 +21,8 @@ class _ImageRecognitionChatbotPageState extends State<ImageRecognitionChatbotPag
   Uint8List? _webImage;
   bool _isProcessing = false;
   
-  // TODO: Replace with your actual Render.com URL after deployment
-  static const String serverUrl = 'https://your-app-name.onrender.com/predict';
+  // Your Render.com server URL
+  static const String serverUrl = 'https://flutter-app-6l0u.onrender.com/predict';
 
   @override
   void initState() {
