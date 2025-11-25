@@ -1,6 +1,6 @@
 flask==3.0.0
 flask-cors==4.0.0
-transformers
 torch
+torchvision
 pillow
 gunicorn==23.0.0
