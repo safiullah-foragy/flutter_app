@@ -133,9 +133,9 @@ class _ImageRecognitionChatbotPageState extends State<ImageRecognitionChatbotPag
       }
 
       final streamedResponse = await request.send().timeout(
-        const Duration(seconds: 30),
+        const Duration(seconds: 60),
         onTimeout: () {
-          throw TimeoutException('Server took too long to respond');
+          throw TimeoutException('Server is not responding. The server may be starting up (cold start takes 30-60s on free tier) or deployment may have failed. Please check Render logs.');
         },
       );
       
@@ -155,15 +155,15 @@ class _ImageRecognitionChatbotPageState extends State<ImageRecognitionChatbotPag
           }
           _addBotMessage(resultText);
         }
+      } else if (response.statusCode == 503) {
+        _showError('Server is starting up. On free tier, this takes 30-60 seconds. Please wait and try again.');
       } else {
-        _showError('Server error: ${response.statusCode}');
+        _showError('Server error: ${response.statusCode}. Please check if deployment succeeded.');
       }
+    } on TimeoutException catch (e) {
+      _showError(e.message);
     } catch (e) {
-      if (e is TimeoutException) {
-        _showError('Server is taking too long. Please try again.');
-      } else {
-        _showError('Failed to analyze image: $e');
-      }
+      _showError('Failed to connect to server. Please ensure:\n1. Server deployment succeeded on Render\n2. Root Directory is set to: image_recognition_server\n3. Check server logs for errors');
     } finally {
       setState(() {
         _isProcessing = false;
