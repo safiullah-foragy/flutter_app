@@ -1,6 +1,6 @@
 flask==3.0.0
 flask-cors==4.0.0
-torch==2.4.1
-torchvision==0.19.1
-Pillow==10.4.0
+torch>=2.0.0,<2.5.0
+torchvision>=0.15.0,<0.20.0
+Pillow>=10.0.0
 gunicorn==23.0.0
