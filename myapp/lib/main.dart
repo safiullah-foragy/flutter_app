@@ -766,9 +766,17 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                       onPressed: () async {
                         // Stop ringtone
                         await NotificationService.instance.stopCallRingtone();
-                        try { await ref.update({'status': 'accepted', 'accepted_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
+                        // Update status to accepted first
+                        try { 
+                          await ref.update({'status': 'accepted', 'accepted_at': DateTime.now().millisecondsSinceEpoch}); 
+                          debugPrint('Call status updated to accepted');
+                        } catch (e) {
+                          debugPrint('Error updating call status: $e');
+                        }
                         Navigator.pop(c);
-                        // Start call page directly
+                        // Wait a moment for Firestore to propagate
+                        await Future.delayed(const Duration(milliseconds: 300));
+                        // Start call page
                         _MyAppNavigator.navigatorKey.currentState?.push(CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId, callSessionId: ref.id));
                       },
                       icon: Icon(video ? Icons.videocam : Icons.call),

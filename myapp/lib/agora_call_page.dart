@@ -397,6 +397,35 @@ class _CallPageState extends State<CallPage> {
   void _attachCallSessionListener() {
     final id = widget.callSessionId;
     if (id == null) return;
+    
+    // First, check the current status immediately
+    FirebaseFirestore.instance.collection('call_sessions').doc(id).get().then((doc) async {
+      if (!doc.exists) return;
+      final data = doc.data() ?? {};
+      final status = data['status'] as String?;
+      final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+      
+      // Determine if we're the caller
+      if (uid != null && data['caller_id'] is String) {
+        _isCaller = (data['caller_id'] == uid);
+      }
+      
+      debugPrint('Initial call session status: $status, isCaller: $_isCaller');
+      
+      // If already accepted when page opens (receiver case), join immediately
+      if (status == 'accepted' && !_joined && _engineInitialized) {
+        debugPrint('Call already accepted on page load, joining channel immediately...');
+        await _joinChannel();
+      }
+      
+      // Start outgoing tone for caller if still ringing
+      if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
+        _outgoingToneStarted = true;
+        await _startOutgoingTone();
+      }
+    });
+    
+    // Then listen for status changes
     _callSessionSub = FirebaseFirestore.instance.collection('call_sessions').doc(id).snapshots().listen((doc) async {
       if (!doc.exists) {
         // Document deleted - treat as ended
