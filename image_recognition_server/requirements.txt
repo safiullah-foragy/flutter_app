@@ -1,6 +1,6 @@
 flask==3.0.0
 flask-cors==4.0.0
-transformers==4.36.0
-torch==2.1.2
-pillow>=10.0.0
+transformers
+torch
+pillow
 gunicorn==23.0.0
