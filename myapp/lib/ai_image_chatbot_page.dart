@@ -23,7 +23,7 @@ class _AIImageChatbotPageState extends State<AIImageChatbotPage> {
   bool _isProcessing = false;
   
   // TODO: Replace with your Render.com URL after deployment
-  static const String serverUrl = 'https://your-app-name.onrender.com/predict';
+  static const String serverUrl = 'https://chat-bot-1-pp18.onrender.com/predict';
 
   @override
   void initState() {
