@@ -1,34 +1,25 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
-import torch
-from torchvision import models, transforms
 import io
 import json
+from transformers import pipeline
+import warnings
+warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for Flutter web
 
-# Load pre-trained ResNet50 model with ImageNet weights (trained on 1.2M images)
-model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
-model.eval()
-
-# Load ImageNet class labels
-with open('imagenet_classes.json', 'r') as f:
-    class_labels = json.load(f)
-
-# Image preprocessing pipeline
-preprocess = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+# Use Hugging Face transformers with a lightweight model
+# This works with any Python version and downloads automatically
+print("Loading image classification model...")
+classifier = pipeline("image-classification", model="google/vit-base-patch16-224")
+print("Model loaded successfully!")
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Render"""
-    return jsonify({'status': 'healthy', 'model': 'ResNet50-ImageNet'}), 200
+    return jsonify({'status': 'healthy', 'model': 'ViT-Base-224'}), 200
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -44,26 +35,16 @@ def predict():
         img_bytes = file.read()
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         
-        # Preprocess and predict
-        img_tensor = preprocess(img).unsqueeze(0)
-        
-        with torch.no_grad():
-            outputs = model(img_tensor)
-            probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
-        
-        # Get top 5 predictions
-        top5_prob, top5_idx = torch.topk(probabilities, 5)
+        # Get predictions
+        results = classifier(img, top_k=5)
         
         predictions = []
-        for i in range(5):
-            class_idx = top5_idx[i].item()
-            confidence = top5_prob[i].item()
-            
-            # Only include predictions with >10% confidence
-            if confidence > 0.1:
+        for result in results:
+            # Only include predictions with >5% confidence
+            if result['score'] > 0.05:
                 predictions.append({
-                    'class': class_labels[class_idx],
-                    'confidence': float(confidence)
+                    'class': result['label'],
+                    'confidence': float(result['score'])
                 })
         
         return jsonify({
