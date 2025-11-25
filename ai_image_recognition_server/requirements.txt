@@ -1,0 +1,6 @@
+flask==3.0.0
+flask-cors==4.0.0
+onnxruntime
+pillow
+numpy
+gunicorn==23.0.0
