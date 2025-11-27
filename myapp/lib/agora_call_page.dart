@@ -1054,12 +1054,19 @@ class _CallPageState extends State<CallPage> {
               icon: Icon(_muted ? Icons.mic_off : Icons.mic, color: Colors.white),
               onPressed: () async {
                 setState(() => _muted = !_muted);
+                debugPrint('=== Mute button pressed: $_muted (affects ONLY local microphone) ===');
                 if (kIsWeb) {
-                  // Web platform
-                  if (_webClient != null) await _webClient!.muteLocalAudio(_muted);
+                  // Web platform - only mutes local outgoing audio
+                  if (_webClient != null) {
+                    await _webClient!.muteLocalAudio(_muted);
+                    debugPrint('Web: Local microphone ${_muted ? 'muted' : 'unmuted'} - remote audio playback NOT affected');
+                  }
                 } else {
-                  // Native platform
-                  if (_engine != null) await _engine!.muteLocalAudioStream(_muted);
+                  // Native platform - only mutes local outgoing audio stream
+                  if (_engine != null) {
+                    await _engine!.muteLocalAudioStream(_muted);
+                    debugPrint('Native: Local audio stream ${_muted ? 'muted' : 'unmuted'} - remote audio playback NOT affected');
+                  }
                 }
               },
             ),

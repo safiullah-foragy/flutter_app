@@ -22,25 +22,33 @@ class AgoraWebClient {
     html.querySelector('#remote-video-container')?.remove();
     html.querySelector('#local-video-container')?.remove();
     
-    // Create remote video container (full screen minus controls area)
+    // Calculate centered position for phone-sized container (430x932)
+    final screenWidth = html.window.innerWidth ?? 1920;
+    final screenHeight = html.window.innerHeight ?? 1080;
+    final phoneWidth = 430;
+    final phoneHeight = 932;
+    final leftOffset = (screenWidth - phoneWidth) ~/ 2;
+    final topOffset = (screenHeight - phoneHeight) ~/ 2;
+    
+    // Create remote video container (full screen within phone bounds minus controls area)
     final remoteContainer = html.DivElement()
       ..id = 'remote-video-container'
       ..style.position = 'fixed'
-      ..style.top = '0'
-      ..style.left = '0'
-      ..style.width = '100vw'
-      ..style.height = 'calc(100vh - 90px)' // Leave space for controls
+      ..style.top = '${topOffset}px'
+      ..style.left = '${leftOffset}px'
+      ..style.width = '${phoneWidth}px'
+      ..style.height = '${phoneHeight - 90}px' // Leave space for controls
       ..style.zIndex = '999999'
       ..style.backgroundColor = 'black'
       ..style.display = 'none'
       ..style.pointerEvents = 'none';
     
-    // Create local video container (PiP) - position above controls
+    // Create local video container (PiP) - position within phone bounds, above controls
     final localContainer = html.DivElement()
       ..id = 'local-video-container'
       ..style.position = 'fixed'
-      ..style.bottom = '110px' // Above controls (90px) + margin
-      ..style.right = '20px'
+      ..style.bottom = '${(screenHeight - phoneHeight) ~/ 2 + 110}px' // Above controls
+      ..style.right = '${(screenWidth - phoneWidth) ~/ 2 + 20}px'
       ..style.width = '150px'
       ..style.height = '200px'
       ..style.zIndex = '1000000'
@@ -53,7 +61,7 @@ class AgoraWebClient {
     html.document.body?.append(remoteContainer);
     html.document.body?.append(localContainer);
     
-    debugPrint('AgoraWeb: Video containers created dynamically');
+    debugPrint('AgoraWeb: Video containers created with phone dimensions (${phoneWidth}x${phoneHeight}) at position ($leftOffset, $topOffset)');
   }
 
   /// Initialize the Agora Web client
@@ -341,12 +349,14 @@ class AgoraWebClient {
   }
 
   /// Toggle local audio mute state
+  /// IMPORTANT: This only mutes the LOCAL microphone (outgoing audio).
+  /// It does NOT affect incoming audio from remote users.
   Future<void> muteLocalAudio(bool mute) async {
     if (_localAudioTrack != null) {
       await _promiseToFuture(
         _localAudioTrack!.callMethod('setEnabled', [!mute])
       );
-      debugPrint('AgoraWeb: Local audio ${mute ? 'muted' : 'unmuted'}');
+      debugPrint('AgoraWeb: Local audio ${mute ? 'muted' : 'unmuted'} (outgoing only, NOT affecting incoming audio)');
     }
   }
 
