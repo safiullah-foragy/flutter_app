@@ -532,23 +532,45 @@ class _CallPageState extends State<CallPage> {
 
       String path = prefs.getString('ringtone_call') ?? '';
       if (path.isEmpty) {
-        path = 'assets/mp3 file/lovely-Alarm.mp3';
+        path = 'assets/mp3 file/Lovely-Alarm.mp3';
       }
+      
+      debugPrint('Starting outgoing tone with path: $path');
+      
       // Ensure asset exists; if not, let it throw and we will fallback
       if (!kIsWeb) {
         await rootBundle.load(path);
+        debugPrint('Asset loaded successfully');
       }
 
       _outgoingPlayer?.stop();
       await _outgoingPlayer?.dispose();
       _outgoingPlayer = AudioPlayer();
+      
+      // Configure audio context for outgoing call
+      await _outgoingPlayer!.setAudioContext(AudioContext(
+        android: const AudioContextAndroid(
+          isSpeakerphoneOn: true,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.notificationRingtone,
+          audioFocus: AndroidAudioFocus.gain,
+        ),
+      ));
+      
       await _outgoingPlayer!.setReleaseMode(ReleaseMode.loop);
       await _outgoingPlayer!.setVolume(1.0);
+      
+      // Strip 'assets/' prefix for AssetSource
+      String strippedPath = path.replaceFirst('assets/', '');
+      debugPrint('Playing outgoing tone: $strippedPath');
+      
       // Start playing selected asset in loop
-      await _outgoingPlayer!.play(AssetSource(path));
+      await _outgoingPlayer!.play(AssetSource(strippedPath));
       _outgoingPlayerActive = true;
+      debugPrint('Outgoing tone started successfully');
       return; // Success; skip fallback beeps
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Error starting outgoing tone: $e');
       // Fallback to periodic system alert beeps
     }
 

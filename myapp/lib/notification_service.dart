@@ -165,11 +165,22 @@ class NotificationService {
       String strippedPath = assetPath.replaceFirst('assets/', '');
       debugPrint('Stripped path for AssetSource: $strippedPath');
       
-      await _ringtonePlayer!.play(AssetSource(strippedPath));
-      debugPrint('=== Call ringtone play command sent successfully ===');
+      // Play the ringtone
+      final source = AssetSource(strippedPath);
+      await _ringtonePlayer!.play(source);
+      debugPrint('=== Call ringtone started playing successfully ===');
+      
+      // Listen for errors
+      _ringtonePlayer!.onPlayerComplete.listen((event) {
+        debugPrint('Ringtone playback completed (should be looping)');
+      });
     } catch (e, stackTrace) {
       debugPrint('!!! Error playing call ringtone: $e');
       debugPrint('Stack trace: $stackTrace');
+      // Try fallback with system sound
+      try {
+        await stopCallRingtone();
+      } catch (_) {}
     }
   }
 

@@ -683,6 +683,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   }
 
   void _attachCallSessionListener(String uid) {
+    debugPrint('=== Attaching call session listener for uid: $uid ===');
     _callSessionSub?.cancel();
     _callSessionSub = FirebaseFirestore.instance
         .collection('call_sessions')
@@ -690,15 +691,19 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         .where('status', isEqualTo: 'ringing')
         .snapshots()
         .listen((snap) {
+      debugPrint('Call session snapshot received: ${snap.docs.length} docs');
       if (snap.docs.isEmpty) return;
       for (final doc in snap.docs) {
         final data = doc.data();
         final channel = data['channel'] as String? ?? '';
         final callerId = data['caller_id'] as String? ?? '';
         final video = data['video'] == true;
+        debugPrint('Incoming call detected - Channel: $channel, Caller: $callerId, Video: $video');
         if (channel.isEmpty || callerId.isEmpty) continue;
         _showIncomingCallGlobal(doc.reference, callerId, channel, video);
       }
+    }, onError: (error) {
+      debugPrint('Call session listener error: $error');
     });
   }
 
@@ -709,15 +714,27 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
 
   bool _showingGlobalCall = false;
   Future<void> _showIncomingCallGlobal(DocumentReference ref, String callerId, String channel, bool video) async {
-    if (_showingGlobalCall || !mounted) return;
+    if (_showingGlobalCall || !mounted) {
+      debugPrint('Skipping incoming call dialog - already showing or not mounted');
+      return;
+    }
     _showingGlobalCall = true;
+    
+    debugPrint('=== Showing incoming call dialog ===');
+    debugPrint('Caller: $callerId, Channel: $channel, Video: $video');
     
     // Find conversation
     final convId = await _findConversationWith(callerId);
+    debugPrint('Conversation ID: $convId');
     
     // Start playing constant ringtone
     debugPrint('Starting call ringtone: ${NotificationService.defaultCallRingtone}');
-    await NotificationService.instance.playCallRingtone(NotificationService.defaultCallRingtone);
+    try {
+      await NotificationService.instance.playCallRingtone(NotificationService.defaultCallRingtone);
+      debugPrint('Ringtone started successfully');
+    } catch (e) {
+      debugPrint('Error starting ringtone: $e');
+    }
     
     // Load caller profile
     Map<String, dynamic>? user;
@@ -780,7 +797,13 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                       onPressed: () async {
                         // Stop ringtone
-                        await NotificationService.instance.stopCallRingtone();
+                        debugPrint('Decline button pressed - stopping ringtone');
+                        try {
+                          await NotificationService.instance.stopCallRingtone();
+                          debugPrint('Ringtone stopped');
+                        } catch (e) {
+                          debugPrint('Error stopping ringtone: $e');
+                        }
                         try { await ref.update({'status': 'rejected', 'ended_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
                         Navigator.pop(c);
                       },
@@ -790,8 +813,15 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                       onPressed: () async {
-                        // Stop ringtone
-                        await NotificationService.instance.stopCallRingtone();
+                        // Stop ringtone first
+                        debugPrint('Accept button pressed - stopping ringtone');
+                        try {
+                          await NotificationService.instance.stopCallRingtone();
+                          debugPrint('Ringtone stopped');
+                        } catch (e) {
+                          debugPrint('Error stopping ringtone: $e');
+                        }
+                        
                         // Update status to accepted first
                         try { 
                           await ref.update({'status': 'accepted', 'accepted_at': DateTime.now().millisecondsSinceEpoch}); 
