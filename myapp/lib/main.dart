@@ -747,6 +747,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     
     // Listen to call session changes to auto-close dialog if caller cancels
     StreamSubscription<DocumentSnapshot>? dialogListener;
+    bool acceptedByUser = false; // Track if user pressed accept button
     
     await showDialog(
       context: context,
@@ -756,14 +757,24 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         dialogListener = ref.snapshots().listen((doc) async {
           if (!doc.exists) {
             // Document deleted - close dialog
-            await NotificationService.instance.stopCallRingtone();
+            if (!acceptedByUser) {
+              await NotificationService.instance.stopCallRingtone();
+            }
             if (c.mounted) Navigator.pop(c);
             return;
           }
           final data = doc.data() as Map<String, dynamic>?;
           final status = data?['status'] as String?;
           
+          debugPrint('Call session status update in listener: $status, acceptedByUser: $acceptedByUser');
+          
           // If call is no longer ringing (ended, rejected, missed), close dialog
+          // BUT don't close if status is 'accepted' and user pressed accept button
+          if (status == 'accepted' && acceptedByUser) {
+            debugPrint('Call accepted by user - keeping dialog open briefly for transition');
+            return;
+          }
+          
           if (status != 'ringing' && status != 'accepted') {
             debugPrint('Call status changed to $status - closing dialog and stopping ringtone');
             await NotificationService.instance.stopCallRingtone();
@@ -796,6 +807,9 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
                       onPressed: () async {
+                        // Mark that user declined
+                        acceptedByUser = false;
+                        
                         // Stop ringtone
                         debugPrint('Decline button pressed - stopping ringtone');
                         try {
@@ -804,8 +818,14 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                         } catch (e) {
                           debugPrint('Error stopping ringtone: $e');
                         }
-                        try { await ref.update({'status': 'rejected', 'ended_at': DateTime.now().millisecondsSinceEpoch}); } catch (_) {}
-                        Navigator.pop(c);
+                        
+                        // Update status first
+                        try { 
+                          await ref.update({'status': 'rejected', 'ended_at': DateTime.now().millisecondsSinceEpoch}); 
+                        } catch (_) {}
+                        
+                        // Close dialog
+                        if (c.mounted) Navigator.pop(c);
                       },
                       icon: const Icon(Icons.call_end),
                       label: const Text('Decline'),
@@ -813,27 +833,41 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                       onPressed: () async {
-                        // Stop ringtone first
-                        debugPrint('Accept button pressed - stopping ringtone');
+                        // Mark that user accepted the call
+                        acceptedByUser = true;
+                        
+                        // Stop ringtone IMMEDIATELY
+                        debugPrint('Accept button pressed - stopping ringtone IMMEDIATELY');
                         try {
                           await NotificationService.instance.stopCallRingtone();
-                          debugPrint('Ringtone stopped');
+                          debugPrint('Ringtone stopped successfully');
                         } catch (e) {
                           debugPrint('Error stopping ringtone: $e');
                         }
                         
-                        // Update status to accepted first
+                        // Close dialog first
+                        if (c.mounted) Navigator.pop(c);
+                        
+                        // Update status to accepted
                         try { 
                           await ref.update({'status': 'accepted', 'accepted_at': DateTime.now().millisecondsSinceEpoch}); 
                           debugPrint('Call status updated to accepted');
                         } catch (e) {
                           debugPrint('Error updating call status: $e');
                         }
-                        Navigator.pop(c);
-                        // Wait a moment for Firestore to propagate
-                        await Future.delayed(const Duration(milliseconds: 300));
+                        
+                        // Wait a moment for dialog to close
+                        await Future.delayed(const Duration(milliseconds: 200));
+                        
                         // Start call page
-                        _MyAppNavigator.navigatorKey.currentState?.push(CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId, callSessionId: ref.id));
+                        _MyAppNavigator.navigatorKey.currentState?.push(CallPage.route(
+                          channelName: channel, 
+                          video: video, 
+                          conversationId: convId, 
+                          remoteUserId: callerId, 
+                          callSessionId: ref.id
+                        ));
+                        debugPrint('Navigated to CallPage');
                       },
                       icon: Icon(video ? Icons.videocam : Icons.call),
                       label: const Text('Accept'),
@@ -848,10 +882,17 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     );
     
     // Clean up listener when dialog closes
+    debugPrint('Dialog closed - cleaning up listener and stopping ringtone');
     await dialogListener?.cancel();
     
-    // Stop ringtone when dialog closes (in case user didn't press buttons)
-    await NotificationService.instance.stopCallRingtone();
+    // Always stop ringtone when dialog closes (safety net)
+    try {
+      await NotificationService.instance.stopCallRingtone();
+      debugPrint('Ringtone stopped after dialog close');
+    } catch (e) {
+      debugPrint('Error stopping ringtone after dialog close: $e');
+    }
+    
     _showingGlobalCall = false;
   }
 
