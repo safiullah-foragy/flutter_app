@@ -1227,6 +1227,15 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                 MaterialPageRoute(builder: (_) => const AIImageChatbotPage()),
               ),
             ),
+            // Job Search
+            IconButton(
+              tooltip: 'Job Search',
+              icon: const Icon(Icons.work_outline),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const JobSearchPage()),
+              ),
+            ),
             // Notifications icon with unread badge
             StreamBuilder<QuerySnapshot>(
               stream: (_auth.currentUser == null)
