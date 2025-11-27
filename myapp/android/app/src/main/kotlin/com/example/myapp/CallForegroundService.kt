@@ -67,7 +67,19 @@ class CallForegroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOnlyAlertOnce(true)
             .build()
-        startForeground(NOTIF_ID, notif)
+        
+        // Use appropriate foreground service type based on Android version and call type
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ requires specific foreground service types
+            // For video calls, we would need FOREGROUND_SERVICE_TYPE_CAMERA, but that requires
+            // camera permission to be actively granted, which may cause issues.
+            // Use only microphone + media playback types which are safer
+            val serviceType = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or 
+                             android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            startForeground(NOTIF_ID, notif, serviceType)
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
     }
 
     private fun startRingtone(assetPath: String?) {

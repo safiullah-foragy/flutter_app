@@ -631,19 +631,46 @@ class _CallPageState extends State<CallPage> {
   static const MethodChannel _appChannel = MethodChannel('com.example.myapp/app');
   Future<void> _startCallForeground() async {
     if (kIsWeb) return; // No foreground service on web
-    // Android 15+ requires RECORD_AUDIO permission to be actively granted before starting FGS with microphone type
+    
+    // Check required permissions before starting foreground service
     if (!kIsWeb) {
       try {
-        final status = await Permission.microphone.status;
-        if (!status.isGranted) return; // Skip if permission not granted
-      } catch (_) {
-        return; // Permission check failed; skip service
+        // Always need microphone permission
+        final micStatus = await Permission.microphone.status;
+        if (!micStatus.isGranted) {
+          debugPrint('Skipping foreground service - microphone permission not granted');
+          return;
+        }
+        
+        // For video calls, also check camera permission (though service won't use camera type)
+        if (widget.video) {
+          final camStatus = await Permission.camera.status;
+          if (!camStatus.isGranted) {
+            debugPrint('Skipping foreground service - camera permission not granted for video call');
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint('Permission check failed: $e');
+        return; // Skip service if permission check fails
       }
     }
+    
     final title = widget.video ? 'Video call' : 'Audio call';
     final name = _remoteUserData?['name'] ?? widget.remoteUserId ?? '';
     final text = name.isNotEmpty ? 'Talking with $name' : '';
-    try { await _appChannel.invokeMethod('startCallForeground', {'title': title, 'text': text, 'video': widget.video}); } catch (_) {}
+    
+    try { 
+      await _appChannel.invokeMethod('startCallForeground', {
+        'title': title, 
+        'text': text, 
+        'video': widget.video
+      }); 
+      debugPrint('Call foreground service started successfully');
+    } catch (e) {
+      debugPrint('Failed to start call foreground service: $e');
+      // Don't crash - call can continue without foreground service
+    }
   }
   Future<void> _stopCallForeground() async {
     if (kIsWeb) return; // No foreground service on web
