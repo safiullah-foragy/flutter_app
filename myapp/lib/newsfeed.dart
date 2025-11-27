@@ -21,6 +21,7 @@ import 'background_tasks.dart';
 import 'notifications.dart';
 import 'all_users_list.dart';
 import 'ai_image_chatbot_page.dart';
+import 'job_search_page.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
