@@ -11,8 +11,8 @@ class JobSearchPage extends StatefulWidget {
 }
 
 class _JobSearchPageState extends State<JobSearchPage> {
-  // TODO: Replace with your deployed Render URL
-  static const String apiBaseUrl = 'https://your-job-api.onrender.com';
+  // Job API deployed on Render
+  static const String apiBaseUrl = 'https://bd-job-api.onrender.com';
   
   List<JobCircular> jobs = [];
   List<JobCircular> filteredJobs = [];
