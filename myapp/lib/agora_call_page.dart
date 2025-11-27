@@ -416,10 +416,12 @@ class _CallPageState extends State<CallPage> {
       if (status == 'accepted' && !_joined && _engineInitialized) {
         debugPrint('Call already accepted on page load, joining channel immediately...');
         await _joinChannel();
+        return; // Don't start outgoing tone if already accepted
       }
       
-      // Start outgoing tone for caller if still ringing
+      // Start outgoing tone for caller ONLY if still ringing (not if accepted)
       if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
+        debugPrint('Starting outgoing tone for caller...');
         _outgoingToneStarted = true;
         await _startOutgoingTone();
       }
@@ -467,6 +469,9 @@ class _CallPageState extends State<CallPage> {
       
       // When call is accepted, stop ringtone and join channel (caller & callee)
       if (status == 'accepted') {
+        debugPrint('=== Call ACCEPTED - Stopping all ringtones ===');
+        
+        // CRITICAL: Stop outgoing tone IMMEDIATELY for caller
         _stopOutgoingTone();
 
         // For debugging: see which side is reacting
@@ -474,7 +479,7 @@ class _CallPageState extends State<CallPage> {
 
         // Join channel only after acceptance and only once, on both sides
         if (!_joined && !_isJoining && _engineInitialized) {
-          debugPrint('Call accepted (isCaller=$_isCaller), joining channel...');
+          debugPrint('Call accepted (isCaller=$_isCaller), joining channel NOW...');
           await _joinChannel();
         } else if (!_engineInitialized && !_joined && !_isJoining) {
           // Engine not ready yet, defer join until initialization completes
