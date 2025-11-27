@@ -19,53 +19,25 @@ class _SignupPageState extends State<SignupPage> {
   final TextEditingController nameController = TextEditingController();
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
-  final TextEditingController sessionController = TextEditingController();
-  final TextEditingController dobController = TextEditingController();
-  final TextEditingController currentJobController = TextEditingController();
-  final TextEditingController experienceController = TextEditingController();
 
   bool _isLoading = false;
   bool _obscurePassword = true;
-  DateTime? _selectedDate;
 
   @override
   void dispose() {
     nameController.dispose();
     emailController.dispose();
     passwordController.dispose();
-    sessionController.dispose();
-    dobController.dispose();
-    currentJobController.dispose();
-    experienceController.dispose();
     super.dispose();
-  }
-
-  Future<void> _selectDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(1900),
-      lastDate: DateTime.now(),
-    );
-    if (picked != null) {
-      setState(() {
-        _selectedDate = picked;
-        dobController.text = DateFormat('yyyy-MM-dd').format(picked);
-      });
-    }
   }
 
   void signup() async {
     String name = nameController.text.trim();
     String email = emailController.text.trim();
     String password = passwordController.text.trim();
-    String session = sessionController.text.trim();
-    String dob = dobController.text.trim();
-    String job = currentJobController.text.trim();
-    String exp = experienceController.text.trim();
 
-    if ([name, email, password, session, dob, job, exp].any((e) => e.isEmpty)) {
-      Fluttertoast.showToast(msg: 'Please fill all fields');
+    if (name.isEmpty || email.isEmpty || password.isEmpty) {
+      Fluttertoast.showToast(msg: 'Name, email, and password are required');
       return;
     }
 
@@ -90,10 +62,6 @@ class _SignupPageState extends State<SignupPage> {
       await _firestore.collection('users').doc(user.user!.uid).set({
         'name': name,
         'email': email,
-        'session': session,
-        'dob': dob,
-        'current_job': job,
-        'experience': exp,
         'created_at': DateFormat('yyyy-MM-dd').format(DateTime.now()),
       });
 
@@ -217,57 +185,6 @@ class _SignupPageState extends State<SignupPage> {
                           });
                         },
                       ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 15),
-
-                  TextField(
-                    controller: sessionController,
-                    decoration: InputDecoration(
-                      labelText: 'Session',
-                      prefixIcon: const Icon(Icons.school),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 15),
-
-                  TextField(
-                    controller: dobController,
-                    readOnly: true,
-                    onTap: () => _selectDate(context),
-                    decoration: InputDecoration(
-                      labelText: 'Date of Birth',
-                      hintText: 'Select your date of birth',
-                      prefixIcon: const Icon(Icons.calendar_today),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 15),
-
-                  TextField(
-                    controller: currentJobController,
-                    decoration: InputDecoration(
-                      labelText: 'Current Job',
-                      prefixIcon: const Icon(Icons.work),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 15),
-
-                  TextField(
-                    controller: experienceController,
-                    decoration: InputDecoration(
-                      labelText: 'Experience',
-                      prefixIcon: const Icon(Icons.timeline),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),

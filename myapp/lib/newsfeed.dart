@@ -1830,21 +1830,47 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         children: [
           Row(
             children: [
-              CircleAvatar(
-                radius: 15,
-                backgroundColor: Colors.grey[300],
-                backgroundImage: comment['user_data']?['profile_image'] != null
-                    ? CachedNetworkImageProvider(comment['user_data']['profile_image'])
-                    : null,
-                child: comment['user_data']?['profile_image'] == null
-                    ? const Icon(Icons.person, size: 15, color: Colors.grey)
-                    : null,
+              GestureDetector(
+                onTap: () {
+                  final userId = comment['user_id'] as String?;
+                  if (userId != null && userId.isNotEmpty) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => SeeProfileFromNewsfeed(userId: userId),
+                      ),
+                    );
+                  }
+                },
+                child: CircleAvatar(
+                  radius: 15,
+                  backgroundColor: Colors.grey[300],
+                  backgroundImage: comment['user_data']?['profile_image'] != null
+                      ? CachedNetworkImageProvider(comment['user_data']['profile_image'])
+                      : null,
+                  child: comment['user_data']?['profile_image'] == null
+                      ? const Icon(Icons.person, size: 15, color: Colors.grey)
+                      : null,
+                ),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  comment['user_data']?['name'] ?? 'Unknown User',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                child: GestureDetector(
+                  onTap: () {
+                    final userId = comment['user_id'] as String?;
+                    if (userId != null && userId.isNotEmpty) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => SeeProfileFromNewsfeed(userId: userId),
+                        ),
+                      );
+                    }
+                  },
+                  child: Text(
+                    comment['user_data']?['name'] ?? 'Unknown User',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.blue),
+                  ),
                 ),
               ),
               if (comment['user_id'] == _auth.currentUser?.uid) ...[

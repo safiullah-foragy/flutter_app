@@ -500,10 +500,36 @@ class MyApp extends StatelessWidget {
           ),
           navigatorKey: _MyAppNavigator.navigatorKey,
           builder: (context, child) {
-            // Global unread message bubble overlay removed per request
+            // Constrain app to phone dimensions on web/desktop
+            Widget content = child ?? const SizedBox.shrink();
+            
+            if (kIsWeb || (MediaQuery.of(context).size.width > 600)) {
+              content = Center(
+                child: Container(
+                  constraints: const BoxConstraints(
+                    maxWidth: 430, // iPhone 14 Pro Max width
+                    maxHeight: 932, // iPhone 14 Pro Max height
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300, width: 1),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        spreadRadius: 5,
+                      ),
+                    ],
+                  ),
+                  child: ClipRect(
+                    child: content,
+                  ),
+                ),
+              );
+            }
+            
             return Stack(
               children: [
-                if (child != null) child,
+                content,
                 const Positioned(
                   top: 0,
                   left: 0,

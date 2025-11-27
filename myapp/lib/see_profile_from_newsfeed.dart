@@ -322,7 +322,8 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
           ),
 
           // Bio Section
-          if ((userData!['bio'] ?? userData!['about']) != null)
+          if ((userData!['bio'] ?? userData!['about']) != null &&
+              (userData!['bio'] ?? userData!['about']).toString().isNotEmpty)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -350,7 +351,61 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
               ),
             ),
 
-          // Details Section
+          // Education Section
+          if (_hasEducation(userData!))
+            Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.school, color: Colors.blue.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Education',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ..._buildEducationCards(userData!),
+                ],
+              ),
+            ),
+
+          // Work Experience Section
+          if (_hasWorkExperience(userData!))
+            Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.work, color: Colors.blue.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Work Experience',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ..._buildWorkCards(userData!),
+                ],
+              ),
+            ),
+
+          // Contact & Other Details Section
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Column(
@@ -426,6 +481,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
       final key = entry.key;
       if (key == 'profile_image' || key == 'name' || key == 'email' || 
           key == 'bio' || key == 'about' || key == 'username' || 
+          key == 'fcmTokens' || key == 'fcm_token' || 
           preferred.contains(key)) continue;
       
       final value = entry.value;
@@ -573,5 +629,159 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
     } else {
       return '${date.day}/${date.month}/${date.year}';
     }
+  }
+
+  bool _hasEducation(Map<String, dynamic> data) {
+    return (data['school']?.toString().isNotEmpty ?? false) ||
+        (data['college']?.toString().isNotEmpty ?? false) ||
+        (data['university']?.toString().isNotEmpty ?? false) ||
+        (data['field_of_study']?.toString().isNotEmpty ?? false);
+  }
+
+  bool _hasWorkExperience(Map<String, dynamic> data) {
+    return (data['current_job']?.toString().isNotEmpty ?? false) ||
+        (data['current_company']?.toString().isNotEmpty ?? false) ||
+        (data['previous_job']?.toString().isNotEmpty ?? false) ||
+        (data['previous_company']?.toString().isNotEmpty ?? false) ||
+        (data['experience']?.toString().isNotEmpty ?? false);
+  }
+
+  List<Widget> _buildEducationCards(Map<String, dynamic> data) {
+    final cards = <Widget>[];
+
+    // University
+    if (data['university']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildInfoCard(
+        icon: Icons.school,
+        title: data['university'],
+        subtitle: data['university_year'] ?? 
+                  (data['studying_currently'] == true ? 'Currently Studying' : null),
+        detail: data['field_of_study'],
+      ));
+    }
+
+    // College
+    if (data['college']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildInfoCard(
+        icon: Icons.school,
+        title: data['college'],
+        subtitle: data['college_year'],
+        detail: null,
+      ));
+    }
+
+    // School
+    if (data['school']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildInfoCard(
+        icon: Icons.school,
+        title: data['school'],
+        subtitle: data['school_year'],
+        detail: null,
+      ));
+    }
+
+    return cards;
+  }
+
+  List<Widget> _buildWorkCards(Map<String, dynamic> data) {
+    final cards = <Widget>[];
+
+    // Current Job
+    if (data['current_job']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildInfoCard(
+        icon: Icons.work,
+        title: data['current_job'],
+        subtitle: data['current_company'],
+        detail: data['current_job_start'] != null
+            ? 'Since ${data['current_job_start']}'
+            : (data['working_currently'] == true ? 'Currently Working' : null),
+      ));
+    }
+
+    // Previous Job
+    if (data['previous_job']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildInfoCard(
+        icon: Icons.work_history,
+        title: data['previous_job'],
+        subtitle: data['previous_company'],
+        detail: data['previous_job_year'],
+      ));
+    }
+
+    // Experience
+    if (data['experience']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildInfoCard(
+        icon: Icons.timeline,
+        title: 'Total Experience',
+        subtitle: data['experience'],
+        detail: null,
+      ));
+    }
+
+    return cards;
+  }
+
+  Widget _buildInfoCard({
+    required IconData icon,
+    required String? title,
+    String? subtitle,
+    String? detail,
+  }) {
+    if (title == null || title.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ListTile(
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(
+            icon,
+            color: Colors.blue.shade700,
+            size: 20,
+          ),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        subtitle: subtitle != null && subtitle.isNotEmpty
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[700],
+                    ),
+                  ),
+                  if (detail != null && detail.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      detail,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ],
+              )
+            : null,
+      ),
+    );
   }
 }

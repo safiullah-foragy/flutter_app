@@ -13,6 +13,8 @@ import 'package:chewie/chewie.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'notebooks.dart';
 import 'ProfileImagesPage.dart';
+import 'edit_profile_page.dart';
+import 'see_profile_from_newsfeed.dart';
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'supabase.dart' as sb;
@@ -1444,23 +1446,45 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.blue,
                                   foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(15.0),
                                   ),
                                 ),
                               ),
                               
-                              const SizedBox(width: 16),
-                              
                               ElevatedButton.icon(
                                 onPressed: isUploading ? null : _uploadProfileImage,
                                 icon: const Icon(Icons.camera_alt, size: 18),
-                                label: const Text('Upload Photo'),
+                                label: const Text('Photo'),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.blue,
                                   foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(15.0),
+                                  ),
+                                ),
+                              ),
+                              
+                              ElevatedButton.icon(
+                                onPressed: () async {
+                                  final result = await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => EditProfilePage(userData: userData),
+                                    ),
+                                  );
+                                  if (result == true) {
+                                    _fetchUserData();
+                                  }
+                                },
+                                icon: const Icon(Icons.edit, size: 18),
+                                label: const Text('Edit'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(15.0),
                                   ),
@@ -1505,17 +1529,32 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                     _buildSectionHeader('Personal Information'),
                     _buildEditableInfoItem('Full Name', userData?['name'] ?? 'Not provided', 'name'),
                     _buildInfoItem('Email', userData?['email'] ?? 'Not provided'),
-                    _buildEditableInfoItem('Date of Birth', userData?['dob'] ?? 'Not provided', 'dob', isDate: true),
+                    if (userData?['bio']?.toString().isNotEmpty ?? false)
+                      _buildEditableInfoItem('Bio', userData?['bio'] ?? 'Not provided', 'bio'),
+                    if (userData?['phone']?.toString().isNotEmpty ?? false)
+                      _buildEditableInfoItem('Phone', userData?['phone'] ?? 'Not provided', 'phone'),
+                    if (userData?['location']?.toString().isNotEmpty ?? false)
+                      _buildEditableInfoItem('Location', userData?['location'] ?? 'Not provided', 'location'),
+                    if (userData?['website']?.toString().isNotEmpty ?? false)
+                      _buildEditableInfoItem('Website', userData?['website'] ?? 'Not provided', 'website'),
+                    if (userData?['dob']?.toString().isNotEmpty ?? false)
+                      _buildEditableInfoItem('Date of Birth', userData?['dob'] ?? 'Not provided', 'dob', isDate: true),
                     
-                    _buildSectionHeader('Professional Information'),
-                    _buildEditableInfoItem('Current Job', userData?['current_job'] ?? 'Not provided', 'current_job'),
-                    _buildEditableInfoItem('Experience', userData?['experience'] ?? 'Not provided', 'experience'),
-                    _buildEditableInfoItem('Session', userData?['session'] ?? 'Not provided', 'session'),
+                    if (_hasEducation(userData ?? {}))
+                      _buildSectionHeader('Education'),
+                    if (_hasEducation(userData ?? {}))
+                      ..._buildEducationCards(userData ?? {}),
+                    
+                    if (_hasWorkExperience(userData ?? {}))
+                      _buildSectionHeader('Work Experience'),
+                    if (_hasWorkExperience(userData ?? {}))
+                      ..._buildWorkCards(userData ?? {}),
                     
                     _buildSectionHeader('Account Information'),
                     _buildInfoItem('User ID', user?.uid ?? 'Not available'),
                     _buildInfoItem('Account Created', userData?['created_at'] ?? 'Not available'),
-                    _buildInfoItem('Last Login', userData?['last_login'] ?? 'Not available'),
+                    if (userData?['last_login']?.toString().isNotEmpty ?? false)
+                      _buildInfoItem('Last Login', userData?['last_login'] ?? 'Not available'),
                     
                     const SizedBox(height: 30),
                     
@@ -1924,21 +1963,47 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
         children: [
           Row(
             children: [
-              CircleAvatar(
-                radius: 15,
-                backgroundColor: Colors.grey[300],
-                backgroundImage: _isHttpUrl(comment['user_data']?['profile_image'] as String?)
-                    ? CachedNetworkImageProvider(comment['user_data']['profile_image'])
-                    : null,
-                child: !_isHttpUrl(comment['user_data']?['profile_image'] as String?)
-                    ? const Icon(Icons.person, size: 15, color: Colors.grey)
-                    : null,
+              GestureDetector(
+                onTap: () {
+                  final userId = comment['user_id'] as String?;
+                  if (userId != null && userId.isNotEmpty) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => SeeProfileFromNewsfeed(userId: userId),
+                      ),
+                    );
+                  }
+                },
+                child: CircleAvatar(
+                  radius: 15,
+                  backgroundColor: Colors.grey[300],
+                  backgroundImage: _isHttpUrl(comment['user_data']?['profile_image'] as String?)
+                      ? CachedNetworkImageProvider(comment['user_data']['profile_image'])
+                      : null,
+                  child: !_isHttpUrl(comment['user_data']?['profile_image'] as String?)
+                      ? const Icon(Icons.person, size: 15, color: Colors.grey)
+                      : null,
+                ),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  comment['user_data']?['name'] ?? 'Unknown User',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                child: GestureDetector(
+                  onTap: () {
+                    final userId = comment['user_id'] as String?;
+                    if (userId != null && userId.isNotEmpty) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => SeeProfileFromNewsfeed(userId: userId),
+                        ),
+                      );
+                    }
+                  },
+                  child: Text(
+                    comment['user_data']?['name'] ?? 'Unknown User',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.blue),
+                  ),
                 ),
               ),
               if (comment['user_id'] == _auth.currentUser?.uid) ...[
@@ -1994,6 +2059,160 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
               style: TextStyle(fontSize: 10, color: Colors.grey),
             ),
         ],
+      ),
+    );
+  }
+
+  bool _hasEducation(Map<String, dynamic> data) {
+    return (data['school']?.toString().isNotEmpty ?? false) ||
+        (data['college']?.toString().isNotEmpty ?? false) ||
+        (data['university']?.toString().isNotEmpty ?? false) ||
+        (data['field_of_study']?.toString().isNotEmpty ?? false);
+  }
+
+  bool _hasWorkExperience(Map<String, dynamic> data) {
+    return (data['current_job']?.toString().isNotEmpty ?? false) ||
+        (data['current_company']?.toString().isNotEmpty ?? false) ||
+        (data['previous_job']?.toString().isNotEmpty ?? false) ||
+        (data['previous_company']?.toString().isNotEmpty ?? false) ||
+        (data['experience']?.toString().isNotEmpty ?? false);
+  }
+
+  List<Widget> _buildEducationCards(Map<String, dynamic> data) {
+    final cards = <Widget>[];
+
+    // University
+    if (data['university']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildProfileInfoCard(
+        icon: Icons.school,
+        title: data['university'],
+        subtitle: data['university_year'] ?? 
+                  (data['studying_currently'] == true ? 'Currently Studying' : null),
+        detail: data['field_of_study'],
+      ));
+    }
+
+    // College
+    if (data['college']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildProfileInfoCard(
+        icon: Icons.school,
+        title: data['college'],
+        subtitle: data['college_year'],
+        detail: null,
+      ));
+    }
+
+    // School
+    if (data['school']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildProfileInfoCard(
+        icon: Icons.school,
+        title: data['school'],
+        subtitle: data['school_year'],
+        detail: null,
+      ));
+    }
+
+    return cards;
+  }
+
+  List<Widget> _buildWorkCards(Map<String, dynamic> data) {
+    final cards = <Widget>[];
+
+    // Current Job
+    if (data['current_job']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildProfileInfoCard(
+        icon: Icons.work,
+        title: data['current_job'],
+        subtitle: data['current_company'],
+        detail: data['current_job_start'] != null
+            ? 'Since ${data['current_job_start']}'
+            : (data['working_currently'] == true ? 'Currently Working' : null),
+      ));
+    }
+
+    // Previous Job
+    if (data['previous_job']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildProfileInfoCard(
+        icon: Icons.work_history,
+        title: data['previous_job'],
+        subtitle: data['previous_company'],
+        detail: data['previous_job_year'],
+      ));
+    }
+
+    // Experience
+    if (data['experience']?.toString().isNotEmpty ?? false) {
+      cards.add(_buildProfileInfoCard(
+        icon: Icons.timeline,
+        title: 'Total Experience',
+        subtitle: data['experience'],
+        detail: null,
+      ));
+    }
+
+    return cards;
+  }
+
+  Widget _buildProfileInfoCard({
+    required IconData icon,
+    required String? title,
+    String? subtitle,
+    String? detail,
+  }) {
+    if (title == null || title.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ListTile(
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(
+            icon,
+            color: Colors.blue.shade700,
+            size: 20,
+          ),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        subtitle: subtitle != null && subtitle.isNotEmpty
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[700],
+                    ),
+                  ),
+                  if (detail != null && detail.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      detail,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ],
+              )
+            : null,
       ),
     );
   }
