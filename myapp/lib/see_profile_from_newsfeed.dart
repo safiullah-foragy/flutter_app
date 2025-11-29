@@ -136,14 +136,135 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
         toolbarHeight: 56,
       ),
       body: isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-              ),
-            )
+          ? _buildLoadingSkeleton()
           : userData == null
               ? _buildErrorState()
               : _buildProfileContent(),
+    );
+  }
+
+  Widget _buildLoadingSkeleton() {
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          // Header skeleton
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.blue.shade50, Colors.purple.shade50],
+              ),
+            ),
+            child: Column(
+              children: [
+                Container(
+                  width: 120,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.grey[300],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: 150,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  width: 100,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: List.generate(
+                      1,
+                      (index) => Column(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 20,
+                            decoration: BoxDecoration(
+                              color: Colors.grey[300],
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Container(
+                            width: 60,
+                            height: 16,
+                            decoration: BoxDecoration(
+                              color: Colors.grey[300],
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Content skeleton
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: List.generate(
+                3,
+                (index) => Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 120,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[300],
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[300],
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -181,6 +302,31 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
   }
 
   Widget _buildProfileContent() {
+    // Calculate online status
+    bool isOnline = userData!['is_online'] == true;
+    int lastActive = userData!['last_active'] ?? 0;
+    String statusText = '';
+    
+    if (isOnline) {
+      statusText = 'Online';
+    } else if (lastActive > 0) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final diff = now - lastActive;
+      final minutes = diff ~/ 60000;
+      final hours = diff ~/ 3600000;
+      final days = diff ~/ 86400000;
+      
+      if (minutes < 1) {
+        statusText = 'Active just now';
+      } else if (minutes < 60) {
+        statusText = 'Active ${minutes}m ago';
+      } else if (hours < 24) {
+        statusText = 'Active ${hours}h ago';
+      } else if (days < 7) {
+        statusText = 'Active ${days}d ago';
+      }
+    }
+    
     return SingleChildScrollView(
       padding: const EdgeInsets.all(0),
       child: Column(
@@ -201,7 +347,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
             ),
             child: Column(
               children: [
-                // Profile Avatar
+                // Profile Avatar with online status
                 Stack(
                   alignment: Alignment.bottomRight,
                   children: [
@@ -242,22 +388,26 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
                             : null,
                       ),
                     ),
-                    Container(
-                      width: 24,
-                      height: 24,
-                      decoration: const BoxDecoration(
-                        color: Colors.green,
-                        shape: BoxShape.circle,
-                        border: Border.fromBorderSide(
-                          BorderSide(color: Colors.white, width: 2),
+                    if (isOnline)
+                      Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                        ),
+                        child: const Icon(
+                          Icons.circle,
+                          color: Colors.green,
+                          size: 16,
                         ),
                       ),
-                    ),
                   ],
                 ),
                 const SizedBox(height: 16),
 
-                // Name and Username
+                // Name
                 Text(
                   userData!['name'] ?? 'Unknown User',
                   style: const TextStyle(
@@ -266,35 +416,47 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
                     color: Colors.black87,
                   ),
                 ),
-                const SizedBox(height: 4),
-                if (userData!['username'] != null)
-                  Text(
-                    '@${userData!['username']}',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[600],
-                    ),
-                  ),
                 const SizedBox(height: 8),
-                if (userData!['email'] != null)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.email, size: 16, color: Colors.grey[600]),
-                      const SizedBox(width: 4),
-                      Text(
-                        userData!['email'],
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[600],
-                        ),
+                
+                // Online Status
+                if (statusText.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: isOnline ? Colors.green.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: isOnline ? Colors.green : Colors.grey,
+                        width: 1,
                       ),
-                    ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: isOnline ? Colors.green : Colors.grey,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          statusText,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: isOnline ? Colors.green.shade700 : Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
 
                 const SizedBox(height: 16),
 
-                // Stats Row
+                // Posts Count
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                   decoration: BoxDecoration(
@@ -308,124 +470,77 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
                       ),
                     ],
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  child: Column(
                     children: [
-                      _buildStatItem(postsCount, 'Posts'),
-                      _buildStatItem(followersCount, 'Followers'),
-                      _buildStatItem(followingCount, 'Following'),
+                      Text(
+                        postsCount.toString(),
+                        style: const TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Posts',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[600],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ],
             ),
           ),
+
+          // Personal Details Section
+          _buildSectionTitle('Personal Details', Icons.person),
+          _buildPersonalDetailsSection(),
+
+          // Professional Profile Section
+          if (_hasWorkExperience(userData!)) ...[
+            _buildSectionTitle('Professional Profile', Icons.work),
+            _buildProfessionalSection(),
+          ],
+
+          // Educational Profile Section
+          if (_hasEducation(userData!)) ...[
+            _buildSectionTitle('Educational Profile', Icons.school),
+            _buildEducationalSection(),
+          ],
 
           // Bio Section
           if ((userData!['bio'] ?? userData!['about']) != null &&
-              (userData!['bio'] ?? userData!['about']).toString().isNotEmpty)
+              (userData!['bio'] ?? userData!['about']).toString().isNotEmpty) ...[
+            _buildSectionTitle('About', Icons.info_outline),
             Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'About',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    (userData!['bio'] ?? userData!['about']) ?? '',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[700],
-                      height: 1.4,
-                    ),
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
                   ),
                 ],
               ),
-            ),
-
-          // Education Section
-          if (_hasEducation(userData!))
-            Container(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.school, color: Colors.blue.shade700),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Education',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  ..._buildEducationCards(userData!),
-                ],
-              ),
-            ),
-
-          // Work Experience Section
-          if (_hasWorkExperience(userData!))
-            Container(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.work, color: Colors.blue.shade700),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Work Experience',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  ..._buildWorkCards(userData!),
-                ],
-              ),
-            ),
-
-          // Contact & Other Details Section
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Text(
-                    'Details',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
-                  ),
+              child: Text(
+                (userData!['bio'] ?? userData!['about']) ?? '',
+                style: TextStyle(
+                  fontSize: 15,
+                  color: Colors.grey[700],
+                  height: 1.5,
                 ),
-                ..._buildDetailsCards(userData!),
-              ],
+              ),
             ),
-          ),
+            const SizedBox(height: 16),
+          ],
 
           const SizedBox(height: 20),
         ],
@@ -578,6 +693,231 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
     }
   }
 
+  Widget _buildSectionTitle(String title, IconData icon) {
+    return Container(
+      margin: const EdgeInsets.only(left: 20, right: 20, top: 16, bottom: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: Colors.blue.shade700, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPersonalDetailsSection() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          if (userData!['name'] != null && (userData!['name'] as String).isNotEmpty)
+            _buildInfoTile('Full Name', userData!['name'], Icons.person),
+          if (userData!['username'] != null && (userData!['username'] as String).isNotEmpty)
+            _buildInfoTile('Username', '@${userData!['username']}', Icons.alternate_email),
+          if (userData!['email'] != null && (userData!['email'] as String).isNotEmpty)
+            _buildInfoTile('Email', userData!['email'], Icons.email),
+          if (userData!['dob'] != null && (userData!['dob'] as String).isNotEmpty)
+            _buildInfoTile('Date of Birth', _formatDate(userData!['dob']), Icons.cake),
+          if (userData!['phone'] != null && (userData!['phone'] as String).isNotEmpty)
+            _buildInfoTile('Phone', userData!['phone'], Icons.phone),
+          if (userData!['location'] != null && (userData!['location'] as String).isNotEmpty)
+            _buildInfoTile('Location', userData!['location'], Icons.location_on),
+          if (userData!['website'] != null && (userData!['website'] as String).isNotEmpty)
+            _buildInfoTile('Website', userData!['website'], Icons.language),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProfessionalSection() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          if (userData!['current_job'] != null && (userData!['current_job'] as String).isNotEmpty)
+            _buildInfoTile('Current Position', userData!['current_job'], Icons.work),
+          if (userData!['current_company'] != null && (userData!['current_company'] as String).isNotEmpty)
+            _buildInfoTile('Current Company', userData!['current_company'], Icons.business),
+          if (userData!['previous_job'] != null && (userData!['previous_job'] as String).isNotEmpty)
+            _buildInfoTile('Previous Position', userData!['previous_job'], Icons.work_history),
+          if (userData!['previous_company'] != null && (userData!['previous_company'] as String).isNotEmpty)
+            _buildInfoTile('Previous Company', userData!['previous_company'], Icons.business_center),
+          if (userData!['experience'] != null && (userData!['experience'] as String).isNotEmpty)
+            _buildInfoTile('Experience', userData!['experience'], Icons.timeline),
+          if (userData!['profession'] != null && (userData!['profession'] as String).isNotEmpty)
+            _buildInfoTile('Profession', userData!['profession'], Icons.badge),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEducationalSection() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          if (userData!['school'] != null && (userData!['school'] as String).isNotEmpty)
+            _buildInfoTile(
+              'School',
+              userData!['school'] + 
+                (userData!['school_year'] != null && (userData!['school_year'] as String).isNotEmpty
+                  ? ' (${userData!['school_year']})'
+                  : ''),
+              Icons.school,
+            ),
+          if (userData!['college'] != null && (userData!['college'] as String).isNotEmpty)
+            _buildInfoTile(
+              'College',
+              userData!['college'] + 
+                (userData!['college_year'] != null && (userData!['college_year'] as String).isNotEmpty
+                  ? ' (${userData!['college_year']})'
+                  : ''),
+              Icons.business,
+            ),
+          if (userData!['university'] != null && (userData!['university'] as String).isNotEmpty)
+            _buildInfoTile(
+              'University',
+              userData!['university'] + 
+                (userData!['university_year'] != null && (userData!['university_year'] as String).isNotEmpty
+                  ? ' (${userData!['university_year']})'
+                  : ''),
+              Icons.school_outlined,
+            ),
+          if (userData!['field_of_study'] != null && (userData!['field_of_study'] as String).isNotEmpty)
+            _buildInfoTile('Field of Study', userData!['field_of_study'], Icons.menu_book),
+          if (userData!['studying_currently'] != null)
+            _buildInfoTile(
+              'Current Status',
+              userData!['studying_currently'] == true ? 'Currently Studying' : 'Completed',
+              Icons.access_time,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoTile(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: Colors.grey.shade200,
+            width: 1,
+          ),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: Colors.blue.shade700, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    color: Colors.black87,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDate(dynamic dateValue) {
+    if (dateValue == null) return '';
+    
+    try {
+      DateTime date;
+      if (dateValue is String) {
+        date = DateTime.parse(dateValue);
+      } else if (dateValue is DateTime) {
+        date = dateValue;
+      } else {
+        return dateValue.toString();
+      }
+      
+      final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return '${months[date.month - 1]} ${date.day}, ${date.year}';
+    } catch (e) {
+      return dateValue.toString();
+    }
+  }
+
   String _initialsFromName(String name) {
     if (name.trim().isEmpty) return '?';
     final parts = name.trim().split(RegExp(r'\s+'));
@@ -608,27 +948,11 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
       return v.toString();
     }
     if (v is Timestamp) {
-      return '${_formatDate(v.toDate())}';
+      final date = v.toDate();
+      final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return '${months[date.month - 1]} ${date.day}, ${date.year}';
     }
     return v.toString();
-  }
-
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final difference = now.difference(date);
-    
-    if (difference.inDays == 0) {
-      return 'Today';
-    } else if (difference.inDays == 1) {
-      return 'Yesterday';
-    } else if (difference.inDays < 7) {
-      return '${difference.inDays} days ago';
-    } else if (difference.inDays < 30) {
-      final weeks = (difference.inDays / 7).floor();
-      return '$weeks ${weeks == 1 ? 'week' : 'weeks'} ago';
-    } else {
-      return '${date.day}/${date.month}/${date.year}';
-    }
   }
 
   bool _hasEducation(Map<String, dynamic> data) {
