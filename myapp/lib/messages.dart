@@ -1791,11 +1791,39 @@ class _ChatPageState extends State<ChatPage> {
           builder: (context, snapshot) {
             String title = widget.otherUserId;
             String? avatarUrl;
+            bool isOnline = false;
+            int lastActive = 0;
             
             if (snapshot.hasData && snapshot.data!.exists) {
               final data = snapshot.data!.data() as Map<String, dynamic>?;
               title = data?['name'] ?? widget.otherUserId;
               avatarUrl = data?['profile_image'];
+              isOnline = data?['is_online'] == true;
+              lastActive = data?['last_active'] ?? 0;
+            }
+            
+            // Calculate time ago for last active
+            String statusText = '';
+            if (isOnline) {
+              statusText = 'Online';
+            } else if (lastActive > 0) {
+              final now = DateTime.now().millisecondsSinceEpoch;
+              final diff = now - lastActive;
+              final minutes = diff ~/ 60000;
+              final hours = diff ~/ 3600000;
+              final days = diff ~/ 86400000;
+              
+              if (minutes < 1) {
+                statusText = 'Active just now';
+              } else if (minutes < 60) {
+                statusText = 'Active ${minutes}m ago';
+              } else if (hours < 24) {
+                statusText = 'Active ${hours}h ago';
+              } else if (days < 7) {
+                statusText = 'Active ${days}d ago';
+              } else {
+                statusText = '';
+              }
             }
             
             return Row(
@@ -1807,30 +1835,62 @@ class _ChatPageState extends State<ChatPage> {
                       builder: (_) => SeeProfileFromNewsfeed(userId: widget.otherUserId)
                     ));
                   },
-                  child: (avatarUrl != null && avatarUrl.isNotEmpty)
-                    ? CircleAvatar(
-                        backgroundImage: CachedNetworkImageProvider(avatarUrl),
-                        radius: 16,
-                      )
-                    : CircleAvatar(
-                        backgroundColor: Colors.blue,
-                        radius: 16,
-                        child: Text(
-                          title.isNotEmpty ? title[0].toUpperCase() : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
+                  child: Stack(
+                    children: [
+                      (avatarUrl != null && avatarUrl.isNotEmpty)
+                        ? CircleAvatar(
+                            backgroundImage: CachedNetworkImageProvider(avatarUrl),
+                            radius: 16,
+                          )
+                        : CircleAvatar(
+                            backgroundColor: Colors.blue,
+                            radius: 16,
+                            child: Text(
+                              title.isNotEmpty ? title[0].toUpperCase() : '?',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                      if (isOnline)
+                        Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: Colors.green,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 2),
+                            ),
                           ),
                         ),
-                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    title,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                      ),
+                      if (statusText.isNotEmpty)
+                        Text(
+                          statusText,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isOnline ? Colors.green : Colors.grey,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ],

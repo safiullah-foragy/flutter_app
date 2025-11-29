@@ -664,9 +664,33 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     if (!kIsWeb) {
       if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive || state == AppLifecycleState.detached) {
         _startMessageWatcher();
+        _updateUserPresence(isOnline: false);
       } else if (state == AppLifecycleState.resumed) {
         _stopMessageWatcher();
+        _updateUserPresence(isOnline: true);
       }
+    } else {
+      // Web: update presence on lifecycle changes
+      if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive || state == AppLifecycleState.detached) {
+        _updateUserPresence(isOnline: false);
+      } else if (state == AppLifecycleState.resumed) {
+        _updateUserPresence(isOnline: true);
+      }
+    }
+  }
+
+  Future<void> _updateUserPresence({required bool isOnline}) async {
+    try {
+      final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) return;
+      
+      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+        'is_online': isOnline,
+        'last_active': DateTime.now().millisecondsSinceEpoch,
+      });
+      debugPrint('User presence updated: ${isOnline ? "online" : "offline"}');
+    } catch (e) {
+      debugPrint('Error updating user presence: $e');
     }
   }
 
