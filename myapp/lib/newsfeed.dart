@@ -20,7 +20,7 @@ import 'app_cache_manager.dart';
 import 'background_tasks.dart';
 import 'notifications.dart';
 import 'all_users_list.dart';
-import 'ai_image_chatbot_page.dart';
+import 'api_ai_page.dart';
 import 'job_search_page.dart';
 
 class NewsfeedPage extends StatefulWidget {
@@ -1219,13 +1219,13 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           foregroundColor: Colors.white,
           toolbarHeight: 48,
           actions: [
-            // AI Image Recognition Chatbot
+            // AI Content Analyzer
             IconButton(
-              tooltip: 'AI Image Recognition',
-              icon: const Icon(Icons.psychology),
+              tooltip: 'AI Analyzer',
+              icon: const Icon(Icons.auto_awesome),
               onPressed: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const AIImageChatbotPage()),
+                MaterialPageRoute(builder: (_) => const ApiAiPage()),
               ),
             ),
             // Job Search
