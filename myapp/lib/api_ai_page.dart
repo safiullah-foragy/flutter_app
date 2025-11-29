@@ -153,18 +153,33 @@ class _ApiAiPageState extends State<ApiAiPage> {
 
       if (response.statusCode == 200) {
         var data = json.decode(response.body);
+        
+        // Check if AI analysis failed
+        String aiExplanation = data['aiExplanation'] ?? '';
+        if (aiExplanation.contains('unavailable') || aiExplanation.contains('API key')) {
+          _showError('⚠️ OpenAI API not configured.\n\nExtracted text: ${(data['extractedText'] ?? '').substring(0, 100)}...\n\nTo get AI analysis, configure OPENAI_API_KEY on Render.com');
+        }
+        
         setState(() {
           _extractedText = data['extractedText'];
-          _aiExplanation = data['aiExplanation'];
+          _aiExplanation = aiExplanation;
           _summary = data['summary'];
           _keyPoints = List<String>.from(data['keyPoints'] ?? []);
           _contextForChat = _extractedText;
           _isLoading = false;
         });
-        _showSuccess('File analyzed successfully!');
+        
+        if (!aiExplanation.contains('unavailable')) {
+          _showSuccess('File analyzed successfully!');
+        }
       } else {
         var error = json.decode(response.body);
-        _showError(error['error'] ?? 'Failed to analyze file');
+        String errorMsg = error['error'] ?? 'Failed to analyze file';
+        if (errorMsg.contains('API key')) {
+          _showError('⚠️ Server configuration needed\n\nPlease add OPENAI_API_KEY to Render.com environment variables');
+        } else {
+          _showError(errorMsg);
+        }
         setState(() => _isLoading = false);
       }
     } catch (e) {
@@ -194,18 +209,33 @@ class _ApiAiPageState extends State<ApiAiPage> {
 
       if (response.statusCode == 200) {
         var data = json.decode(response.body);
+        
+        // Check if AI analysis failed
+        String aiExplanation = data['aiExplanation'] ?? '';
+        if (aiExplanation.contains('unavailable') || aiExplanation.contains('API key')) {
+          _showError('⚠️ OpenAI API not configured.\n\nExtracted text: ${(data['extractedText'] ?? '').substring(0, 100)}...\n\nTo get AI analysis, configure OPENAI_API_KEY on Render.com');
+        }
+        
         setState(() {
           _extractedText = data['extractedText'];
-          _aiExplanation = data['aiExplanation'];
+          _aiExplanation = aiExplanation;
           _summary = data['summary'];
           _keyPoints = List<String>.from(data['keyPoints'] ?? []);
           _contextForChat = _extractedText;
           _isLoading = false;
         });
-        _showSuccess('URL processed successfully!');
+        
+        if (!aiExplanation.contains('unavailable')) {
+          _showSuccess('URL processed successfully!');
+        }
       } else {
         var error = json.decode(response.body);
-        _showError(error['error'] ?? 'Failed to process URL');
+        String errorMsg = error['error'] ?? 'Failed to process URL';
+        if (errorMsg.contains('API key')) {
+          _showError('⚠️ Server configuration needed\n\nPlease add OPENAI_API_KEY to Render.com environment variables');
+        } else {
+          _showError(errorMsg);
+        }
         setState(() => _isLoading = false);
       }
     } catch (e) {
@@ -233,34 +263,42 @@ class _ApiAiPageState extends State<ApiAiPage> {
     _scrollToBottom();
 
     try {
-      // Create a prompt that includes the context
-      String prompt = '''
-Based on this content:
-${_contextForChat!.substring(0, _contextForChat!.length > 2000 ? 2000 : _contextForChat!.length)}
-
-User question: $userMessage
-
-Please provide a helpful answer based on the content above.
-''';
-
+      // Call the chat endpoint with message and context
       var response = await http.post(
-        Uri.parse('$apiBaseUrl/api/extract'),
+        Uri.parse('$apiBaseUrl/api/chat'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'url': 'data:text/plain;base64,${base64Encode(utf8.encode(prompt))}'
+          'message': userMessage,
+          'context': _contextForChat
         }),
       );
 
       if (response.statusCode == 200) {
         var data = json.decode(response.body);
-        String aiResponse = data['aiExplanation'] ?? 'No response received';
         
-        setState(() {
-          _chatMessages.add({'role': 'assistant', 'content': aiResponse});
-        });
-        _scrollToBottom();
+        if (data['success'] == true) {
+          String aiResponse = data['response'] ?? 'No response received';
+          
+          setState(() {
+            _chatMessages.add({'role': 'assistant', 'content': aiResponse});
+          });
+          _scrollToBottom();
+        } else {
+          String errorMsg = data['error'] ?? 'Failed to get AI response';
+          if (errorMsg.contains('API key')) {
+            _showError('OpenAI API key not configured on server. Please configure OPENAI_API_KEY in Render.com environment variables.');
+          } else {
+            _showError(errorMsg);
+          }
+        }
       } else {
-        _showError('Failed to get AI response');
+        var errorData = json.decode(response.body);
+        String errorMsg = errorData['error'] ?? 'Failed to get AI response';
+        if (errorMsg.contains('API key')) {
+          _showError('⚠️ OpenAI API key not configured.\n\nPlease add OPENAI_API_KEY to Render.com:\n1. Go to dashboard.render.com\n2. Select your service\n3. Environment → Add OPENAI_API_KEY');
+        } else {
+          _showError(errorMsg);
+        }
       }
     } catch (e) {
       _showError('Error sending message: $e');
