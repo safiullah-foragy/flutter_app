@@ -563,6 +563,8 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   static const MethodChannel _appChannel = MethodChannel('com.example.myapp/app');
   StreamSubscription<firebase_auth.User?>? _authSub;
   StreamSubscription<QuerySnapshot>? _callSessionSub;
+  Timer? _presenceTimer;
+  
   @override
   void initState() {
     super.initState();
@@ -573,6 +575,8 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     try {
       FirebaseMessaging.instance.onTokenRefresh.listen((token) => _saveFcmToken(token));
     } catch (_) {}
+    // Start periodic presence update (every 2 minutes to keep online status fresh)
+    _startPresenceHeartbeat();
     // Ensure token is saved as soon as user signs in
     _authSub = firebase_auth.FirebaseAuth.instance.authStateChanges().listen((u) async {
       final prefs = await SharedPreferences.getInstance();
@@ -584,6 +588,8 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         try { await FirebaseMessaging.instance.subscribeToTopic(topic); } catch (_) {}
         await prefs.setString('last_topic_uid', u.uid);
         _attachCallSessionListener(u.uid);
+        // Set user as online when authenticated
+        _updateUserPresence(isOnline: true);
       } else {
         // On sign out, best-effort unsubscribe from previous topic
         if (lastUid != null && lastUid.isNotEmpty) {
@@ -593,6 +599,8 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         // Stop background watcher if running
         _stopMessageWatcher();
         _detachCallSessionListener();
+        // Set user as offline when signed out
+        _updateUserPresence(isOnline: false);
       }
     });
     // Listen for navigation requests from Android native (notification taps)
@@ -654,8 +662,18 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   void dispose() {
     _authSub?.cancel();
     _detachCallSessionListener();
+    _presenceTimer?.cancel();
+    _updateUserPresence(isOnline: false);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _startPresenceHeartbeat() {
+    _presenceTimer?.cancel();
+    // Update presence every 2 minutes to keep online status fresh
+    _presenceTimer = Timer.periodic(const Duration(minutes: 2), (_) {
+      _updateUserPresence(isOnline: true);
+    });
   }
 
   // Start the native foreground service when app is backgrounded; stop when resumed
