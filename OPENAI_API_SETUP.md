@@ -28,11 +28,24 @@ The API AI Content Analyzer extracts text from files but **doesn't provide AI an
 4. Click on the service
 5. Go to **Environment** tab in left sidebar
 6. Click **Add Environment Variable**
-7. Add:
+7. Add the following variables:
+   
+   **Required:**
    - **Key**: `OPENAI_API_KEY`
    - **Value**: Your OpenAI API key (paste the `sk-...` key)
+   
+   **Optional (for URL processing with cloud backup):**
+   - **Key**: `SUPABASE_URL`
+   - **Value**: `https://nqydqpllowakssgfpevt.supabase.co`
+   - **Key**: `SUPABASE_ANON_KEY`
+   - **Value**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xeWRxcGxsb3dha3NzZ2ZwZXZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzA4ODA4MDAsImV4cCI6MjA0NjQ1NjgwMH0.q9hJ7xHbhE3YgVMzQl4dDhR1VNuHLRRiuA3LbRMVJ5A`
+   - **Key**: `SUPABASE_BUCKET`
+   - **Value**: `api-content`
+
 8. Click **Save Changes**
 9. Render will automatically **redeploy** the service
+
+**Note:** Supabase variables are optional. The API will work without them - file uploads work directly, and URL processing will skip cloud backup but still process files.
 
 ### Step 3: Wait for Deployment
 - The service will redeploy (takes 2-5 minutes)
