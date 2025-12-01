@@ -31,7 +31,7 @@ void main() {
     FlutterError.onError = (FlutterErrorDetails details) {
       // Print and keep default behavior
       // ignore: avoid_print
-      print('FlutterError: ' + details.exceptionAsString());
+      print('FlutterError: ${details.exceptionAsString()}');
       FlutterError.presentError(details);
     };
 
@@ -56,14 +56,14 @@ void main() {
       try {
         final token = await FirebaseAppCheck.instance.getToken(true);
         // ignore: avoid_print
-        print('AppCheck debug token (register this in Firebase Console if enforcement is enabled): ' + (token ?? 'null'));
+        print('AppCheck debug token (register this in Firebase Console if enforcement is enabled): ${token ?? 'null'}');
       } catch (e) {
         // ignore: avoid_print
-        print('AppCheck getToken error: ' + e.toString());
+        print('AppCheck getToken error: $e');
       }
     } catch (e) {
       // ignore: avoid_print
-      print('AppCheck activation error: ' + e.toString());
+      print('AppCheck activation error: $e');
     }
 
     // Ensure auth persistence across app restarts (especially for Web)
@@ -584,7 +584,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
       if (u != null) {
         // Save token and subscribe to a per-user topic for robust delivery
         await _ensureFcmTokenSaved();
-        final topic = 'user_' + u.uid;
+        final topic = 'user_${u.uid}';
         try { await FirebaseMessaging.instance.subscribeToTopic(topic); } catch (_) {}
         await prefs.setString('last_topic_uid', u.uid);
         _attachCallSessionListener(u.uid);
@@ -593,7 +593,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
       } else {
         // On sign out, best-effort unsubscribe from previous topic
         if (lastUid != null && lastUid.isNotEmpty) {
-          try { await FirebaseMessaging.instance.unsubscribeFromTopic('user_' + lastUid); } catch (_) {}
+          try { await FirebaseMessaging.instance.unsubscribeFromTopic('user_$lastUid'); } catch (_) {}
           await prefs.remove('last_topic_uid');
         }
         // Stop background watcher if running
@@ -986,7 +986,7 @@ class AuthGate extends StatelessWidget {
       stream: firebase_auth.FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         // ignore: avoid_print
-        print('AuthGate: connectionState=' + snapshot.connectionState.toString() + ', hasData=' + (snapshot.data != null).toString());
+        print('AuthGate: connectionState=${snapshot.connectionState}, hasData=${snapshot.data != null}');
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),

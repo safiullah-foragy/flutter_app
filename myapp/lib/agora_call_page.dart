@@ -20,11 +20,12 @@ class CallPage extends StatefulWidget {
   final bool video; // true = video call, false = audio-only call
   final String? conversationId; // extracted from channelName or passed explicitly
   final String? remoteUserId; // for displaying avatar/name
-  const CallPage({super.key, required this.channelName, required this.video, this.conversationId, this.remoteUserId, this.callSessionId});
+  final bool isGroupCall; // true if this is a group call
+  const CallPage({super.key, required this.channelName, required this.video, this.conversationId, this.remoteUserId, this.callSessionId, this.isGroupCall = false});
   final String? callSessionId; // Firestore call_session document id for status tracking
 
-      static Route route({required String channelName, required bool video, String? conversationId, String? remoteUserId, String? callSessionId}) =>
-        MaterialPageRoute(builder: (_) => CallPage(channelName: channelName, video: video, conversationId: conversationId, remoteUserId: remoteUserId, callSessionId: callSessionId));
+      static Route route({required String channelName, required bool video, String? conversationId, String? remoteUserId, String? callSessionId, bool isGroupCall = false}) =>
+        MaterialPageRoute(builder: (_) => CallPage(channelName: channelName, video: video, conversationId: conversationId, remoteUserId: remoteUserId, callSessionId: callSessionId, isGroupCall: isGroupCall));
 
   @override
   State<CallPage> createState() => _CallPageState();
@@ -198,11 +199,11 @@ class _CallPageState extends State<CallPage> {
       // Basic event handlers
       if (_engine != null) {
         _engine!.registerEventHandler(RtcEngineEventHandler(
-      onJoinChannelSuccess: (RtcConnection conn, int elapsed) {
+      onJoinChannelSuccess: (RtcConnection conn, int elapsed) async {
         debugPrint('Agora: Join channel SUCCESS - channel: ${conn.channelId}, localUid: ${conn.localUid}');
         setState(() => _joined = true);
         _isJoining = false;
-        _startElapsedTimer();
+        await _syncCallStartTime();
         _startCallForeground();
       },
       onUserJoined: (RtcConnection conn, int remoteUid, int elapsed) {
@@ -293,7 +294,7 @@ class _CallPageState extends State<CallPage> {
           debugPrint('AgoraWeb: Join channel completed, setting _joined=true');
           setState(() => _joined = true);
           _isJoining = false;
-          _startElapsedTimer();
+          await _syncCallStartTime();
           debugPrint('AgoraWeb: Joined channel successfully, _joined=$_joined');
         } catch (e) {
           debugPrint('AgoraWeb: Join channel error - $e');
@@ -396,6 +397,20 @@ class _CallPageState extends State<CallPage> {
 
   void _attachCallSessionListener() {
     final id = widget.callSessionId;
+    
+    // For group calls, skip call session logic and join immediately
+    if (widget.isGroupCall) {
+      debugPrint('Group call detected - joining immediately without waiting for status');
+      _isCaller = false; // In group calls, everyone is a receiver
+      // Join as soon as engine is ready
+      if (_engineInitialized && !_joined && !_isJoining) {
+        _joinChannel();
+      } else {
+        _shouldJoinAfterInit = true;
+      }
+      return;
+    }
+    
     if (id == null) return;
     
     // First, check the current status immediately
@@ -1143,14 +1158,64 @@ class _CallPageState extends State<CallPage> {
     );
   }
 
-  void _startElapsedTimer() {
-    _callStart ??= DateTime.now();
+  void _startElapsedTimer({DateTime? syncedStartTime}) {
+    if (syncedStartTime != null) {
+      _callStart = syncedStartTime;
+    } else {
+      _callStart ??= DateTime.now();
+    }
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_callStart != null) {
         setState(() => _elapsed = DateTime.now().difference(_callStart!));
       }
     });
+  }
+
+  Future<void> _syncCallStartTime() async {
+    final sessionId = widget.callSessionId;
+    if (sessionId == null) {
+      // No session to sync with (fallback)
+      _startElapsedTimer();
+      return;
+    }
+
+    try {
+      final sessionRef = FirebaseFirestore.instance.collection('call_sessions').doc(sessionId);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      
+      // Try to set the call_start_time atomically (only first joiner sets it)
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(sessionRef);
+        if (!snapshot.exists) return;
+        
+        final data = snapshot.data();
+        final existingStartTime = data?['call_start_time'];
+        
+        if (existingStartTime == null) {
+          // First user to join - set the start time
+          transaction.update(sessionRef, {'call_start_time': now});
+          debugPrint('Set call_start_time: $now');
+        }
+      });
+
+      // Now read the synced start time
+      final doc = await sessionRef.get();
+      if (doc.exists) {
+        final startTimeMs = doc.data()?['call_start_time'] as int?;
+        if (startTimeMs != null) {
+          final syncedStartTime = DateTime.fromMillisecondsSinceEpoch(startTimeMs);
+          debugPrint('Synced call start time: $syncedStartTime');;
+          _startElapsedTimer(syncedStartTime: syncedStartTime);
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error syncing call start time: $e');
+    }
+
+    // Fallback to local time if sync fails
+    _startElapsedTimer();
   }
 
   String _formatElapsed() {

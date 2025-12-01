@@ -597,7 +597,9 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
       if (key == 'profile_image' || key == 'name' || key == 'email' || 
           key == 'bio' || key == 'about' || key == 'username' || 
           key == 'fcmTokens' || key == 'fcm_token' || 
-          preferred.contains(key)) continue;
+          preferred.contains(key)) {
+        continue;
+      }
       
       final value = entry.value;
       if (value.toString().isNotEmpty) {
@@ -940,7 +942,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
       if (v > 1000000000 && v < 2000000000000) {
         try {
           final dt = DateTime.fromMillisecondsSinceEpoch(v);
-          return '${_formatDate(dt)}';
+          return _formatDate(dt);
         } catch (_) {
           return v.toString();
         }

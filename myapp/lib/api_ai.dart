@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 class ApiAiPage extends StatefulWidget {
-  const ApiAiPage({Key? key}) : super(key: key);
+  const ApiAiPage({super.key});
 
   @override
   State<ApiAiPage> createState() => _ApiAiPageState();
@@ -29,7 +29,7 @@ class _ApiAiPageState extends State<ApiAiPage> {
   String? _summary;
   List<String>? _keyPoints;
   
-  List<Map<String, String>> _chatMessages = [];
+  final List<Map<String, String>> _chatMessages = [];
   String? _contextForChat;
 
   @override

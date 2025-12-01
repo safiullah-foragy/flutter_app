@@ -154,8 +154,9 @@ Future<bool> _handleQueuedMediaUpload(String type, Map<String, dynamic> map) asy
     // Bump conversation last_message/last_updated
     final lastUpdated = DateTime.now().millisecondsSinceEpoch;
   String lastMessageText = '[File]';
-  if (type == 'upload_message_image') lastMessageText = '[Image]';
-  else if (type == 'upload_message_video') lastMessageText = '[Video]';
+  if (type == 'upload_message_image') {
+    lastMessageText = '[Image]';
+  } else if (type == 'upload_message_video') lastMessageText = '[Video]';
   else if (type == 'upload_message_audio') lastMessageText = '[Voice]';
     await FirebaseFirestore.instance.collection('conversations').doc(conversationId).update({
       'last_message': lastMessageText,

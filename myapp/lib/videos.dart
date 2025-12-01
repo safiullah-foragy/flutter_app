@@ -155,7 +155,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               children: [
                 const Icon(Icons.error_outline, color: Colors.red),
                 const SizedBox(height: 8),
-                Text('Video error: ' + errorMessage),
+                Text('Video error: $errorMessage'),
               ],
             ),
           );
@@ -431,7 +431,7 @@ class _ReelsPlayerScreenState extends State<ReelsPlayerScreen> {
             children: [
               const Icon(Icons.error_outline, color: Colors.red),
               const SizedBox(height: 8),
-              Text('Video error: ' + errorMessage),
+              Text('Video error: $errorMessage'),
             ],
           ),
         ),

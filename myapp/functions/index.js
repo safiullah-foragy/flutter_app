@@ -11,6 +11,7 @@ exports.onMessageCreated = functions.firestore
     const conversationId = context.params.conversationId;
     const senderId = data.sender_id;
     const text = data.text || '';
+    const fileType = data.file_type || '';
 
     // Load conversation to find participants
     const convRef = admin.firestore().collection('conversations').doc(conversationId);
@@ -18,6 +19,8 @@ exports.onMessageCreated = functions.firestore
     if (!convSnap.exists) return null;
     const conv = convSnap.data() || {};
     const participants = conv.participants || [];
+    const isGroup = conv.is_group === true;
+    const groupName = conv.group_name || 'Group';
     const targetIds = participants.filter((p) => p && p !== senderId);
     if (targetIds.length === 0) return null;
 
@@ -45,16 +48,38 @@ exports.onMessageCreated = functions.firestore
     }
   const tokens = Array.from(tokenSet);
 
+    // Prepare notification title and body
+    let notificationTitle = senderName;
+    let notificationBody = text && text.length > 0 ? text : 'Sent you a message';
+    
+    // For groups, include group name
+    if (isGroup) {
+      notificationTitle = `${senderName} in ${groupName}`;
+      if (fileType === 'image') {
+        notificationBody = '📷 Photo';
+      } else if (fileType === 'video') {
+        notificationBody = '🎥 Video';
+      } else if (fileType === 'audio') {
+        notificationBody = '🎤 Voice message';
+      } else if (fileType === 'document' || fileType === 'pdf' || fileType === 'txt') {
+        notificationBody = '📄 Document';
+      } else if (!text || text.length === 0) {
+        notificationBody = 'Sent a message';
+      }
+    }
+
     const payload = {
       notification: {
-        title: senderName,
-        body: text && text.length > 0 ? text : 'Sent you a message',
+        title: notificationTitle,
+        body: notificationBody,
       },
       data: {
         type: 'message',
         conversationId: conversationId,
         otherUserId: senderId,
         senderName: senderName,
+        isGroup: isGroup ? 'true' : 'false',
+        groupName: isGroup ? groupName : '',
         click_action: 'FLUTTER_NOTIFICATION_CLICK',
       },
     };
@@ -230,17 +255,34 @@ exports.onCallSessionCreated = functions.firestore
     const data = snap.data() || {};
     const status = data.status;
     if (status !== 'ringing') return null;
-    const calleeId = data.callee_id;
+    
+    const isGroup = data.is_group === true;
     const callerId = data.caller_id;
     const channel = data.channel;
     const video = !!data.video;
-    if (!calleeId || !callerId || !channel) return null;
+    
+    if (!callerId || !channel) return null;
 
-    // Lookup callee tokens
-    const calleeSnap = await admin.firestore().collection('users').doc(calleeId).get();
-    const tokens = (calleeSnap.exists && Array.isArray((calleeSnap.data() || {}).fcmTokens))
-      ? (calleeSnap.data() || {}).fcmTokens
-      : [];
+    // For group calls, notify all participants except caller
+    let targetIds = [];
+    if (isGroup) {
+      const groupId = data.group_id;
+      if (!groupId) return null;
+      
+      // Load group conversation to get participants
+      const convSnap = await admin.firestore().collection('conversations').doc(groupId).get();
+      if (!convSnap.exists) return null;
+      const conv = convSnap.data() || {};
+      const participants = conv.participants || [];
+      targetIds = participants.filter(p => p !== callerId);
+    } else {
+      // For 1-on-1 calls
+      const calleeId = data.callee_id;
+      if (!calleeId) return null;
+      targetIds = [calleeId];
+    }
+
+    if (targetIds.length === 0) return null;
 
     // Best-effort caller name
     let callerName = callerId;
@@ -252,74 +294,88 @@ exports.onCallSessionCreated = functions.firestore
       }
     } catch (_) {}
 
+    const callType = isGroup ? (video ? 'Group Video' : 'Group Audio') : (video ? 'Video' : 'Audio');
+    
     const payloadData = {
       type: 'call_invite',
       call_channel: channel,
       caller_id: callerId,
       caller_name: callerName,
-      callee_id: calleeId,
       video: video ? '1' : '0',
       call_session_id: context.params.sessionId,
+      is_group: isGroup ? 'true' : 'false',
       click_action: 'FLUTTER_NOTIFICATION_CLICK',
     };
 
     const notification = {
-      title: `Incoming ${video ? 'Video' : 'Audio'} Call`,
-      body: `${callerName} is calling you`,
+      title: `Incoming ${callType} Call`,
+      body: `${callerName} is calling${isGroup ? ' the group' : ' you'}`,
     };
 
+    // Send notifications to all targets
     try {
-      if (tokens.length > 0) {
-        await admin.messaging().sendEachForMulticast({
-          tokens,
-          notification: notification,
-          data: payloadData,
-          android: {
-            priority: 'high',
-            notification: {
-              channelId: 'calls',
-              sound: 'default',
-              priority: 'max',
-              clickAction: 'FLUTTER_NOTIFICATION_CLICK',
-              tag: 'call_' + context.params.sessionId,
-            },
-          },
-          apns: {
-            payload: {
-              aps: {
+      for (const targetId of targetIds) {
+        // Lookup target tokens
+        const targetSnap = await admin.firestore().collection('users').doc(targetId).get();
+        const tokens = (targetSnap.exists && Array.isArray((targetSnap.data() || {}).fcmTokens))
+          ? (targetSnap.data() || {}).fcmTokens
+          : [];
+
+        // Add callee_id for each target
+        const targetPayloadData = { ...payloadData, callee_id: targetId };
+
+        if (tokens.length > 0) {
+          await admin.messaging().sendEachForMulticast({
+            tokens,
+            notification: notification,
+            data: targetPayloadData,
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'calls',
                 sound: 'default',
-                badge: 1,
-                category: 'CALL_INVITE',
+                priority: 'max',
+                clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+                tag: 'call_' + context.params.sessionId,
               },
             },
-          },
-        });
-      } else {
-        // Fallback to per-user topic
-        await admin.messaging().send({
-          topic: `user_${calleeId}`,
-          notification: notification,
-          data: payloadData,
-          android: {
-            priority: 'high',
-            notification: {
-              channelId: 'calls',
-              sound: 'default',
-              priority: 'max',
-              clickAction: 'FLUTTER_NOTIFICATION_CLICK',
-              tag: 'call_' + context.params.sessionId,
-            },
-          },
-          apns: {
-            payload: {
-              aps: {
-                sound: 'default',
-                badge: 1,
-                category: 'CALL_INVITE',
+            apns: {
+              payload: {
+                aps: {
+                  sound: 'default',
+                  badge: 1,
+                  category: 'CALL_INVITE',
+                },
               },
             },
-          },
-        });
+          });
+        } else {
+          // Fallback to per-user topic
+          await admin.messaging().send({
+            topic: `user_${targetId}`,
+            notification: notification,
+            data: targetPayloadData,
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: 'calls',
+                sound: 'default',
+                priority: 'max',
+                clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+                tag: 'call_' + context.params.sessionId,
+              },
+            },
+            apns: {
+              payload: {
+                aps: {
+                  sound: 'default',
+                  badge: 1,
+                  category: 'CALL_INVITE',
+                },
+              },
+            },
+          });
+        }
       }
     } catch (e) {
       console.error('onCallSessionCreated FCM error', e);

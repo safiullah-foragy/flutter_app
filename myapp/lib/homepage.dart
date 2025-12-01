@@ -756,7 +756,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
             children: [
               const Icon(Icons.error_outline, color: Colors.red),
               const SizedBox(height: 8),
-              Text('Video error: ' + errorMessage),
+              Text('Video error: $errorMessage'),
             ],
           ),
         ),
@@ -1585,7 +1585,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                     
                     if (userPosts.isNotEmpty) ...[
                       _buildSectionHeader('Your Posts'),
-                      ...userPosts.map((post) => _buildPostItem(post)).toList(),
+                      ...userPosts.map((post) => _buildPostItem(post)),
                     ],
                   ],
                 ),

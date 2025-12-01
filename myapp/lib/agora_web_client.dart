@@ -61,7 +61,7 @@ class AgoraWebClient {
     html.document.body?.append(remoteContainer);
     html.document.body?.append(localContainer);
     
-    debugPrint('AgoraWeb: Video containers created with phone dimensions (${phoneWidth}x${phoneHeight}) at position ($leftOffset, $topOffset)');
+    debugPrint('AgoraWeb: Video containers created with phone dimensions (${phoneWidth}x$phoneHeight) at position ($leftOffset, $topOffset)');
   }
 
   /// Initialize the Agora Web client

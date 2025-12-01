@@ -25,6 +25,8 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'background_tasks.dart';
 import 'agora_call_page.dart';
 import 'audio_upload_web.dart' if (dart.library.io) 'audio_upload_stub.dart';
+import 'create_group_page.dart';
+import 'group_info_page.dart';
 
 /// Conversations list and chat screen.
 class MessagesPage extends StatefulWidget {
@@ -85,6 +87,11 @@ class _MessagesPageState extends State<MessagesPage> {
         title: const Text('Messages'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.group_add),
+            tooltip: 'Create group',
+            onPressed: () => _showCreateGroup(),
+          ),
+          IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'Search users',
             onPressed: () => _showUserSearch(),
@@ -134,11 +141,25 @@ class _MessagesPageState extends State<MessagesPage> {
               final d = convs[index]['doc'] as QueryDocumentSnapshot;
               final data = convs[index]['data'] as Map<String, dynamic>;
               final participants = List<String>.from(data['participants'] ?? <String>[]);
-              final otherId = participants.firstWhere((p) => p != uid, orElse: () => '');
               final lastMessage = data['last_message'] ?? '';
               final lastUpdated = data['last_updated'] ?? 0;
-              // final archivedMap = Map<String, dynamic>.from(data['archived'] ?? <String, dynamic>{});
               final unread = convs[index]['unread'] as bool;
+              final isGroup = data['is_group'] == true;
+
+              // Handle group conversations
+              if (isGroup) {
+                return _buildGroupConversationItem(
+                  d: d,
+                  data: data,
+                  uid: uid,
+                  unread: unread,
+                  lastMessage: lastMessage,
+                  lastUpdated: lastUpdated,
+                );
+              }
+
+              // Handle 1-on-1 conversations
+              final otherId = participants.firstWhere((p) => p != uid, orElse: () => '');
 
               if (otherId.isEmpty) {
                 return ListTile(
@@ -153,6 +174,7 @@ class _MessagesPageState extends State<MessagesPage> {
                       arguments: {
                         'conversationId': d.id,
                         'otherUserId': otherId,
+                        'isGroup': false,
                       },
                     );
                   },
@@ -329,6 +351,19 @@ class _MessagesPageState extends State<MessagesPage> {
   void _showIncomingCall({required String convId, required String fromUserId, required String channel, required bool video}) async {
     if (!mounted || _showingIncoming) return;
     _showingIncoming = true;
+    
+    // Check if this is a group call
+    bool isGroupCall = false;
+    try {
+      final convDoc = await _firestore.collection('conversations').doc(convId).get();
+      if (convDoc.exists) {
+        final convData = convDoc.data();
+        isGroupCall = convData?['is_group'] == true;
+      }
+    } catch (e) {
+      debugPrint('Error checking if group call: $e');
+    }
+    
     await showDialog(
       context: context,
       barrierDismissible: false,
@@ -337,6 +372,7 @@ class _MessagesPageState extends State<MessagesPage> {
         fromUserId: fromUserId,
         channelName: channel,
         video: video,
+        isGroupCall: isGroupCall,
         onFinished: () { _showingIncoming = false; },
       ),
     );
@@ -363,6 +399,173 @@ class _MessagesPageState extends State<MessagesPage> {
           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
       );
+    }
+  }
+
+  Widget _buildGroupAvatar(String? groupPhotoUrl) {
+    if (groupPhotoUrl != null && groupPhotoUrl.isNotEmpty) {
+      return CircleAvatar(
+        backgroundImage: CachedNetworkImageProvider(groupPhotoUrl),
+      );
+    } else {
+      return CircleAvatar(
+        backgroundColor: Colors.teal,
+        child: const Icon(Icons.group, color: Colors.white),
+      );
+    }
+  }
+
+  Widget _buildGroupConversationItem({
+    required QueryDocumentSnapshot d,
+    required Map<String, dynamic> data,
+    required String uid,
+    required bool unread,
+    required String lastMessage,
+    required int lastUpdated,
+  }) {
+    final groupName = data['group_name'] ?? 'Unnamed Group';
+    final participants = List<String>.from(data['participants'] ?? []);
+    final memberCount = participants.length;
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _firestore.collection('users').doc(uid).snapshots(includeMetadataChanges: true),
+      builder: (context, currentUserSnap) {
+        bool isMuted = false;
+        if (currentUserSnap.hasData && currentUserSnap.data != null && currentUserSnap.data!.exists) {
+          final userData = currentUserSnap.data!.data();
+          if (userData != null) {
+            final mutedList = userData['muted_conversations'] as List<dynamic>? ?? [];
+            isMuted = mutedList.contains(d.id);
+          }
+        }
+
+        return Dismissible(
+          key: ValueKey(d.id),
+          direction: DismissDirection.endToStart,
+          background: Container(
+            color: Colors.red,
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(right: 20),
+            child: const Icon(Icons.delete, color: Colors.white)
+          ),
+          confirmDismiss: (dir) async {
+            final choice = await showDialog<String?>(
+              context: context,
+              builder: (c) {
+                return SimpleDialog(
+                  title: const Text('Group Conversation'),
+                  children: [
+                    SimpleDialogOption(
+                      child: const Text('Archive'),
+                      onPressed: () => Navigator.pop(c, 'archive')
+                    ),
+                    SimpleDialogOption(
+                      child: const Text('Delete'),
+                      onPressed: () => Navigator.pop(c, 'delete')
+                    ),
+                    SimpleDialogOption(
+                      child: const Text('Cancel'),
+                      onPressed: () => Navigator.pop(c, null)
+                    ),
+                  ]
+                );
+              }
+            );
+            if (choice == 'archive') {
+              await _firestore.collection('conversations').doc(d.id).update({
+                'archived.$uid': true
+              });
+              return false;
+            }
+            if (choice == 'delete') {
+              final ok = await _deleteConversation(d.id);
+              return ok;
+            }
+            return false;
+          },
+          child: GestureDetector(
+            onLongPress: () => _showConversationOptions(d.id, uid, groupName, isMuted),
+            child: ListTile(
+              leading: _buildGroupAvatar(data['group_photo']),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      groupName,
+                      style: TextStyle(
+                        fontWeight: unread ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.group, size: 16, color: Colors.grey[600]),
+                ],
+              ),
+              subtitle: Text(
+                lastMessage,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: unread ? Colors.black : Colors.grey,
+                ),
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(_formatTimestamp(lastUpdated), style: const TextStyle(fontSize: 12)),
+                      const SizedBox(height: 4),
+                      Text('$memberCount members', style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+                      if (unread) const Icon(Icons.circle, color: Colors.blue, size: 10),
+                    ],
+                  ),
+                  if (isMuted) const SizedBox(width: 8),
+                  if (isMuted) const Icon(Icons.notifications_off, color: Colors.grey, size: 20),
+                ],
+              ),
+              onTap: () async {
+                await _markConversationRead(d.id, uid);
+                Navigator.of(context).restorablePush(
+                  ChatPage.restorableRoute,
+                  arguments: {
+                    'conversationId': d.id,
+                    'otherUserId': '', // Empty for groups
+                    'isGroup': true,
+                  },
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showCreateGroup() async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const CreateGroupPage()),
+    );
+    
+    // If a group was created, navigate to it
+    if (result != null && result.isNotEmpty) {
+      final uid = _auth.currentUser?.uid;
+      if (uid != null) {
+        await _markConversationRead(result, uid);
+        if (mounted) {
+          Navigator.of(context).restorablePush(
+            ChatPage.restorableRoute,
+            arguments: {
+              'conversationId': result,
+              'otherUserId': '',
+              'isGroup': true,
+            },
+          );
+        }
+      }
     }
   }
 
@@ -745,16 +948,23 @@ class _MessagesPageState extends State<MessagesPage> {
 class ChatPage extends StatefulWidget {
   final String conversationId;
   final String otherUserId;
+  final bool isGroup;
 
-  const ChatPage({required this.conversationId, required this.otherUserId, super.key});
+  const ChatPage({
+    required this.conversationId, 
+    required this.otherUserId, 
+    this.isGroup = false,
+    super.key
+  });
 
   // Restorable route builder for state restoration
   static Route<Object?> restorableRoute(BuildContext context, Object? arguments) {
     final Map args = (arguments as Map?) ?? const {};
     final String convId = (args['conversationId'] ?? '') as String;
     final String otherId = (args['otherUserId'] ?? '') as String;
+    final bool isGroup = (args['isGroup'] ?? false) as bool;
     return MaterialPageRoute(
-      builder: (_) => ChatPage(conversationId: convId, otherUserId: otherId),
+      builder: (_) => ChatPage(conversationId: convId, otherUserId: otherId, isGroup: isGroup),
     );
   }
 
@@ -777,6 +987,11 @@ class _ChatPageState extends State<ChatPage> {
   StreamSubscription<Duration>? _posSub;
   int _previousMessageCount = 0;
 
+  // Group chat state
+  Map<String, dynamic>? _groupData;
+  List<String> _groupParticipants = [];
+  String? _groupAdmin;
+
   // Chat customization settings
   double _messageFontSize = 14.0;
   double _tagFontSize = 10.0;
@@ -790,10 +1005,31 @@ class _ChatPageState extends State<ChatPage> {
     _markRead();
     _loadChatSettings();
     _configureNotificationPlayer();
+    if (widget.isGroup) {
+      _loadGroupData();
+    }
     // Initial scroll will be handled by StreamBuilder's postFrameCallback
     _posSub = _audioPlayer.onPositionChanged.listen((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _loadGroupData() async {
+    try {
+      final doc = await _firestore.collection('conversations').doc(widget.conversationId).get();
+      if (doc.exists) {
+        final data = doc.data();
+        if (data != null) {
+          setState(() {
+            _groupData = data;
+            _groupParticipants = List<String>.from(data['participants'] ?? []);
+            _groupAdmin = data['group_admin'] as String?;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading group data: $e');
+    }
   }
 
   Future<void> _loadChatSettings() async {
@@ -885,7 +1121,7 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _startCall({required bool audioOnly}) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
-    final channel = 'conv_' + widget.conversationId;
+    final channel = 'conv_${widget.conversationId}';
     final otherId = widget.otherUserId;
 
     // Create /call_sessions doc for global signaling so callee gets full-screen dialog even outside MessagesPage.
@@ -970,8 +1206,9 @@ class _ChatPageState extends State<ChatPage> {
       final lastUpdated = DateTime.now().millisecondsSinceEpoch;
       String lastMessageText = text ?? '';
       if ((lastMessageText).isEmpty) {
-        if (fileType == 'image') lastMessageText = '[Image]';
-        else if (fileType == 'video') lastMessageText = '[Video]';
+        if (fileType == 'image') {
+          lastMessageText = '[Image]';
+        } else if (fileType == 'video') lastMessageText = '[Video]';
         else if (fileType == 'audio') lastMessageText = '[Voice]';
         else lastMessageText = '[File]';
       }
@@ -1049,8 +1286,9 @@ class _ChatPageState extends State<ChatPage> {
           final name = picked.name;
           String? ct;
           final lower = name.toLowerCase();
-          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) ct = 'image/jpeg';
-          else if (lower.endsWith('.png')) ct = 'image/png';
+          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+            ct = 'image/jpeg';
+          } else if (lower.endsWith('.png')) ct = 'image/png';
           else if (lower.endsWith('.gif')) ct = 'image/gif';
           else if (lower.endsWith('.webp')) ct = 'image/webp';
           url = await sb.uploadMessageImageBytes(bytes, fileName: name, contentType: ct);
@@ -1124,8 +1362,9 @@ class _ChatPageState extends State<ChatPage> {
           final name = picked.name;
           String? ct;
           final lower = name.toLowerCase();
-          if (lower.endsWith('.mp4')) ct = 'video/mp4';
-          else if (lower.endsWith('.mov')) ct = 'video/quicktime';
+          if (lower.endsWith('.mp4')) {
+            ct = 'video/mp4';
+          } else if (lower.endsWith('.mov')) ct = 'video/quicktime';
           else if (lower.endsWith('.mkv')) ct = 'video/x-matroska';
           else if (lower.endsWith('.webm')) ct = 'video/webm';
           url = await sb.uploadMessageVideoBytes(bytes, fileName: name, contentType: ct);
@@ -1241,7 +1480,7 @@ class _ChatPageState extends State<ChatPage> {
           final dashboard = sb.SupabaseConfig.supabaseUrl.replaceFirst('https://', 'https://app.supabase.com/project/');
           final bucketsUrl = '$dashboard/storage/buckets';
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Failed to upload voice: ${msg}'),
+            content: Text('Failed to upload voice: $msg'),
             action: SnackBarAction(
               label: 'Open Storage',
               onPressed: () async {
@@ -1778,6 +2017,235 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  Widget _buildGroupTitle() {
+    final groupName = _groupData?['group_name'] ?? 'Group';
+    final groupPhotoUrl = _groupData?['group_photo'];
+    final memberCount = _groupParticipants.length;
+    
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 16,
+          backgroundImage: groupPhotoUrl != null && groupPhotoUrl.isNotEmpty
+              ? CachedNetworkImageProvider(groupPhotoUrl)
+              : null,
+          backgroundColor: Colors.teal,
+          child: groupPhotoUrl == null || groupPhotoUrl.isEmpty
+              ? const Icon(Icons.group, color: Colors.white, size: 18)
+              : null,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                groupName,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+              ),
+              Text(
+                '$memberCount members',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUserTitle() {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _firestore.collection('users').doc(widget.otherUserId).snapshots(),
+      builder: (context, snapshot) {
+        String title = widget.otherUserId;
+        String? avatarUrl;
+        bool isOnline = false;
+        int lastActive = 0;
+        
+        if (snapshot.hasData && snapshot.data!.exists) {
+          final data = snapshot.data!.data() as Map<String, dynamic>?;
+          title = data?['name'] ?? widget.otherUserId;
+          avatarUrl = data?['profile_image'];
+          isOnline = data?['is_online'] == true;
+          lastActive = data?['last_active'] ?? 0;
+        }
+        
+        // Calculate time ago for last active
+        String statusText = '';
+        if (isOnline) {
+          statusText = 'Online';
+        } else if (lastActive > 0) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          final diff = now - lastActive;
+          final minutes = diff ~/ 60000;
+          final hours = diff ~/ 3600000;
+          final days = diff ~/ 86400000;
+          
+          if (minutes < 1) {
+            statusText = 'Active just now';
+          } else if (minutes < 60) {
+            statusText = 'Active ${minutes}m ago';
+          } else if (hours < 24) {
+            statusText = 'Active ${hours}h ago';
+          } else if (days < 7) {
+            statusText = 'Active ${days}d ago';
+          } else {
+            statusText = '';
+          }
+        }
+        
+        return Row(
+          children: [
+            GestureDetector(
+              onTap: () {
+                // Open full profile of the other user
+                Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => SeeProfileFromNewsfeed(userId: widget.otherUserId)
+                ));
+              },
+              child: Stack(
+                children: [
+                  (avatarUrl != null && avatarUrl.isNotEmpty)
+                    ? CircleAvatar(
+                        backgroundImage: CachedNetworkImageProvider(avatarUrl),
+                        radius: 16,
+                      )
+                    : CircleAvatar(
+                        backgroundColor: Colors.blue,
+                        radius: 16,
+                        child: Text(
+                          title.isNotEmpty ? title[0].toUpperCase() : '?',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                  if (isOnline)
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: Container(
+                        width: 12,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                  ),
+                  if (statusText.isNotEmpty)
+                    Text(
+                      statusText,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isOnline ? Colors.green : Colors.grey,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _startGroupCall({required bool audioOnly}) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+    final channel = 'conv_${widget.conversationId}';
+
+    // Create call session for tracking
+    String? sessionId;
+    try {
+      final ref = await FirebaseFirestore.instance.collection('call_sessions').add({
+        'channel': channel,
+        'caller_id': uid,
+        'video': !audioOnly,
+        'status': 'ringing',
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'is_group': true,
+        'group_id': widget.conversationId,
+      });
+      sessionId = ref.id;
+    } catch (e) {
+      debugPrint('Failed to create group call session: $e');
+    }
+
+    // Send a call invitation message
+    try {
+      await _firestore
+          .collection('conversations')
+          .doc(widget.conversationId)
+          .collection('messages')
+          .add({
+        'sender_id': uid,
+        'text': audioOnly ? 'Started a group audio call' : 'Started a group video call',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'file_url': '',
+        'file_type': audioOnly ? 'call_audio' : 'call_video',
+        'call_channel': channel,
+        'reactions': <String, dynamic>{},
+        'edited': false,
+      });
+      await _firestore.collection('conversations').doc(widget.conversationId).update({
+        'last_message': audioOnly ? '[Group audio call]' : '[Group video call]',
+        'last_updated': DateTime.now().millisecondsSinceEpoch,
+      });
+    } catch (e) {
+      debugPrint('Error sending group call invite: $e');
+    }
+
+    if (!mounted) return;
+    Navigator.push(context, CallPage.route(
+      channelName: channel, 
+      video: !audioOnly, 
+      callSessionId: sessionId,
+      conversationId: widget.conversationId,
+      isGroupCall: true,
+    ));
+  }
+
+  Future<void> _showGroupInfo() async {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => GroupInfoSheet(
+        conversationId: widget.conversationId,
+        groupData: _groupData,
+        participants: _groupParticipants,
+        adminId: _groupAdmin,
+        onMembersUpdated: () {
+          // Reload group data when members are updated
+          _loadGroupData();
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final uid = _auth.currentUser?.uid;
@@ -1786,149 +2254,58 @@ class _ChatPageState extends State<ChatPage> {
     return Scaffold(
       appBar: AppBar(
         leading: BackButton(onPressed: () => Navigator.pop(context)),
-        title: StreamBuilder<DocumentSnapshot>(
-          stream: _firestore.collection('users').doc(widget.otherUserId).snapshots(),
-          builder: (context, snapshot) {
-            String title = widget.otherUserId;
-            String? avatarUrl;
-            bool isOnline = false;
-            int lastActive = 0;
-            
-            if (snapshot.hasData && snapshot.data!.exists) {
-              final data = snapshot.data!.data() as Map<String, dynamic>?;
-              title = data?['name'] ?? widget.otherUserId;
-              avatarUrl = data?['profile_image'];
-              isOnline = data?['is_online'] == true;
-              lastActive = data?['last_active'] ?? 0;
-            }
-            
-            // Calculate time ago for last active
-            String statusText = '';
-            if (isOnline) {
-              statusText = 'Online';
-            } else if (lastActive > 0) {
-              final now = DateTime.now().millisecondsSinceEpoch;
-              final diff = now - lastActive;
-              final minutes = diff ~/ 60000;
-              final hours = diff ~/ 3600000;
-              final days = diff ~/ 86400000;
-              
-              if (minutes < 1) {
-                statusText = 'Active just now';
-              } else if (minutes < 60) {
-                statusText = 'Active ${minutes}m ago';
-              } else if (hours < 24) {
-                statusText = 'Active ${hours}h ago';
-              } else if (days < 7) {
-                statusText = 'Active ${days}d ago';
-              } else {
-                statusText = '';
-              }
-            }
-            
-            return Row(
-              children: [
-                GestureDetector(
-                  onTap: () {
-                    // Open full profile of the other user
-                    Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => SeeProfileFromNewsfeed(userId: widget.otherUserId)
-                    ));
-                  },
-                  child: Stack(
-                    children: [
-                      (avatarUrl != null && avatarUrl.isNotEmpty)
-                        ? CircleAvatar(
-                            backgroundImage: CachedNetworkImageProvider(avatarUrl),
-                            radius: 16,
-                          )
-                        : CircleAvatar(
-                            backgroundColor: Colors.blue,
-                            radius: 16,
-                            child: Text(
-                              title.isNotEmpty ? title[0].toUpperCase() : '?',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                      if (isOnline)
-                        Positioned(
-                          right: 0,
-                          bottom: 0,
-                          child: Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              color: Colors.green,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        title,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-                      ),
-                      if (statusText.isNotEmpty)
-                        Text(
-                          statusText,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: isOnline ? Colors.green : Colors.grey,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
+        title: widget.isGroup ? _buildGroupTitle() : _buildUserTitle(),
         actions: [
-          IconButton(
-            tooltip: 'Audio Call',
-            icon: const Icon(Icons.call),
-            onPressed: () => _startCall(audioOnly: true),
-          ),
-          IconButton(
-            tooltip: 'Video Call',
-            icon: const Icon(Icons.video_call),
-            onPressed: () => _startCall(audioOnly: false),
-          ),
-          IconButton(
-            tooltip: 'All media',
-            icon: const Icon(Icons.perm_media_outlined),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ConversationMediaPage(
-                    conversationId: widget.conversationId,
-                    otherUserId: widget.otherUserId,
+          if (!widget.isGroup) ...[
+            IconButton(
+              tooltip: 'Audio Call',
+              icon: const Icon(Icons.call),
+              onPressed: () => _startCall(audioOnly: true),
+            ),
+            IconButton(
+              tooltip: 'Video Call',
+              icon: const Icon(Icons.video_call),
+              onPressed: () => _startCall(audioOnly: false),
+            ),
+          ],
+          if (widget.isGroup) ...[
+            IconButton(
+              tooltip: 'Group Audio Call',
+              icon: const Icon(Icons.call),
+              onPressed: () => _startGroupCall(audioOnly: true),
+            ),
+            IconButton(
+              tooltip: 'Group Video Call',
+              icon: const Icon(Icons.video_call),
+              onPressed: () => _startGroupCall(audioOnly: false),
+            ),
+            IconButton(
+              tooltip: 'Group Info',
+              icon: const Icon(Icons.info_outline),
+              onPressed: () => _showGroupInfo(),
+            ),
+          ],
+          if (!widget.isGroup)
+            IconButton(
+              tooltip: 'All media',
+              icon: const Icon(Icons.perm_media_outlined),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ConversationMediaPage(
+                      conversationId: widget.conversationId,
+                      otherUserId: widget.otherUserId,
+                    ),
                   ),
-                ),
-              );
-            },
-          ),
+                );
+              },
+            ),
           IconButton(
             tooltip: 'Chat Settings',
             icon: const Icon(Icons.menu),
             onPressed: () => _showChatSettings(),
           ),
-
         ],
       ),
       body: Column(
@@ -1983,7 +2360,7 @@ class _ChatPageState extends State<ChatPage> {
                       children: [
                         Expanded(
                           child: ListView.builder(
-                            restorationId: 'chat_list_' + widget.conversationId,
+                            restorationId: 'chat_list_${widget.conversationId}',
                             controller: _scrollController,
                             padding: const EdgeInsets.all(8),
                             itemCount: docs.length + (otherIsTyping ? 1 : 0),
@@ -2000,7 +2377,8 @@ class _ChatPageState extends State<ChatPage> {
 
                               final d = docs[index];
                               final data = d.data() as Map<String, dynamic>? ?? {};
-                              final isMe = data['sender_id'] == uid;
+                              final senderId = data['sender_id'] ?? '';
+                              final isMe = senderId == uid;
                               final text = data['text'] ?? '';
                               final fileUrl = data['file_url'] ?? '';
                               final fileType = data['file_type'] ?? '';
@@ -2011,11 +2389,58 @@ class _ChatPageState extends State<ChatPage> {
                               final uploading = data['uploading'] == true;
                               final pending = d.metadata.hasPendingWrites;
 
+                              // For group chats, display sender name and profile photo
+                              Widget? senderInfoWidget;
+                              if (widget.isGroup && !isMe && senderId.isNotEmpty) {
+                                senderInfoWidget = StreamBuilder<DocumentSnapshot>(
+                                  stream: _firestore.collection('users').doc(senderId).snapshots(),
+                                  builder: (context, userSnap) {
+                                    String senderName = senderId;
+                                    String? senderPhotoUrl;
+                                    if (userSnap.hasData && userSnap.data!.exists) {
+                                      final userData = userSnap.data!.data() as Map<String, dynamic>?;
+                                      senderName = userData?['name'] ?? senderId;
+                                      senderPhotoUrl = userData?['profile_image'];
+                                    }
+                                    return Padding(
+                                      padding: const EdgeInsets.only(left: 12, bottom: 4),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          CircleAvatar(
+                                            radius: 10,
+                                            backgroundImage: senderPhotoUrl != null && senderPhotoUrl.isNotEmpty
+                                                ? CachedNetworkImageProvider(senderPhotoUrl)
+                                                : null,
+                                            child: senderPhotoUrl == null || senderPhotoUrl.isEmpty
+                                                ? Text(
+                                                    senderName.isNotEmpty ? senderName[0].toUpperCase() : '?',
+                                                    style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold),
+                                                  )
+                                                : null,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            senderName,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.grey,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                );
+                              }
+
                               return Align(
                                 alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
                                 child: Column(
                                   crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
                                   children: [
+                                    if (senderInfoWidget != null) senderInfoWidget,
                                     GestureDetector(
                                       onLongPress: () => _showMessageOptions(d.id, data, isMe),
                                       child: Container(
@@ -2181,7 +2606,7 @@ class _ChatPageState extends State<ChatPage> {
                                                   onPressed: () {
                                                     final channel = callChannel is String && callChannel.isNotEmpty
                                                         ? callChannel
-                                                        : 'conv_' + widget.conversationId;
+                                                        : 'conv_${widget.conversationId}';
                                                     Navigator.push(
                                                       context,
                                                       CallPage.route(
@@ -2617,11 +3042,11 @@ class ConversationMediaPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+    final FirebaseFirestore firestore = FirebaseFirestore.instance;
     return Scaffold(
       appBar: AppBar(title: const Text('Conversation media')),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore
+        stream: firestore
             .collection('conversations')
             .doc(conversationId)
             .collection('messages')
@@ -2718,8 +3143,9 @@ class IncomingCallDialog extends StatefulWidget {
   final String fromUserId;
   final String channelName;
   final bool video;
+  final bool isGroupCall;
   final VoidCallback onFinished;
-  const IncomingCallDialog({super.key, required this.conversationId, required this.fromUserId, required this.channelName, required this.video, required this.onFinished});
+  const IncomingCallDialog({super.key, required this.conversationId, required this.fromUserId, required this.channelName, required this.video, this.isGroupCall = false, required this.onFinished});
   @override
   State<IncomingCallDialog> createState() => _IncomingCallDialogState();
 }
@@ -2755,29 +3181,89 @@ class _IncomingCallDialogState extends State<IncomingCallDialog> {
           children: [
             CircleAvatar(
               radius: 48,
-              backgroundColor: Colors.blueGrey,
+              backgroundColor: widget.isGroupCall ? Colors.teal : Colors.blueGrey,
               backgroundImage: (avatarUrl is String && avatarUrl.isNotEmpty) ? NetworkImage(avatarUrl) : null,
-              child: (avatarUrl is String && avatarUrl.isNotEmpty) ? null : Text(name[0].toUpperCase(), style: const TextStyle(fontSize: 32, color: Colors.white)),
+              child: (avatarUrl is String && avatarUrl.isNotEmpty) ? null : (widget.isGroupCall ? const Icon(Icons.group, size: 48, color: Colors.white) : Text(name[0].toUpperCase(), style: const TextStyle(fontSize: 32, color: Colors.white))),
             ),
             const SizedBox(height: 16),
-            Text('${widget.video ? 'Video' : 'Audio'} call from', style: const TextStyle(color: Colors.white70)),
+            Text('${widget.video ? 'Video' : 'Audio'} call ${widget.isGroupCall ? 'in group' : 'from'}', style: const TextStyle(color: Colors.white70)),
             const SizedBox(height: 8),
             Text(name, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+            if (widget.isGroupCall)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text('Group Call', style: TextStyle(color: Colors.tealAccent, fontSize: 14)),
+              ),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                  onPressed: () { Navigator.pop(context); widget.onFinished(); },
+                  onPressed: () async {
+                    // Find and update the call_session status to 'rejected'
+                    try {
+                      final callSessions = await _firestore
+                          .collection('call_sessions')
+                          .where('channel', isEqualTo: widget.channelName)
+                          .where('status', isEqualTo: 'ringing')
+                          .limit(1)
+                          .get();
+                      
+                      if (callSessions.docs.isNotEmpty) {
+                        final sessionDoc = callSessions.docs.first;
+                        await sessionDoc.reference.update({
+                          'status': 'rejected',
+                          'ended_at': DateTime.now().millisecondsSinceEpoch,
+                        });
+                        debugPrint('Updated call session ${sessionDoc.id} to rejected');
+                      }
+                    } catch (e) {
+                      debugPrint('Error updating call session status: $e');
+                    }
+
+                    if (!mounted) return;
+                    Navigator.pop(context); 
+                    widget.onFinished();
+                  },
                   icon: const Icon(Icons.call_end),
                   label: const Text('Decline'),
                 ),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                  onPressed: () {
-                    Navigator.pop(context); widget.onFinished();
-                    Navigator.push(context, CallPage.route(channelName: widget.channelName, video: widget.video, conversationId: widget.conversationId, remoteUserId: widget.fromUserId));
+                  onPressed: () async {
+                    // Find and update the call_session status to 'accepted'
+                    try {
+                      final callSessions = await _firestore
+                          .collection('call_sessions')
+                          .where('channel', isEqualTo: widget.channelName)
+                          .where('status', isEqualTo: 'ringing')
+                          .limit(1)
+                          .get();
+                      
+                      if (callSessions.docs.isNotEmpty) {
+                        final sessionDoc = callSessions.docs.first;
+                        await sessionDoc.reference.update({
+                          'status': 'accepted',
+                          'accepted_at': DateTime.now().millisecondsSinceEpoch,
+                        });
+                        debugPrint('Updated call session ${sessionDoc.id} to accepted');
+                      }
+                    } catch (e) {
+                      debugPrint('Error updating call session status: $e');
+                    }
+
+                    if (!mounted) return;
+                    Navigator.pop(context); 
+                    widget.onFinished();
+                    
+                    Navigator.push(context, CallPage.route(
+                      channelName: widget.channelName, 
+                      video: widget.video, 
+                      conversationId: widget.conversationId, 
+                      remoteUserId: widget.fromUserId,
+                      isGroupCall: widget.isGroupCall,
+                    ));
                   },
                   icon: Icon(widget.video ? Icons.videocam : Icons.call),
                   label: const Text('Accept'),

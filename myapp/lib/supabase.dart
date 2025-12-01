@@ -29,8 +29,9 @@ Future<String> uploadImage(File imageFile, {String? fileName, String folder = 'p
     // Prefer the extension of the final upload name (if supplied) so headers match the stored name
     final String ext = p.extension(finalFileName.isNotEmpty ? finalFileName : imageFile.path).toLowerCase();
     String? contentType;
-  if (ext == '.jpg' || ext == '.jpeg') contentType = 'image/jpeg';
-  else if (ext == '.png') contentType = 'image/png';
+  if (ext == '.jpg' || ext == '.jpeg') {
+    contentType = 'image/jpeg';
+  } else if (ext == '.png') contentType = 'image/png';
   else if (ext == '.gif') contentType = 'image/gif';
   else if (ext == '.webp') contentType = 'image/webp';
   else if (ext == '.mp4') contentType = 'video/mp4';
@@ -160,8 +161,9 @@ Future<String> uploadImageData(
     final String ext = p.extension(finalFileName).toLowerCase();
     String? ct = contentType;
     if (ct == null || ct.isEmpty) {
-  if (ext == '.jpg' || ext == '.jpeg') ct = 'image/jpeg';
-  else if (ext == '.png') ct = 'image/png';
+  if (ext == '.jpg' || ext == '.jpeg') {
+    ct = 'image/jpeg';
+  } else if (ext == '.png') ct = 'image/png';
   else if (ext == '.gif') ct = 'image/gif';
   else if (ext == '.webp') ct = 'image/webp';
   else if (ext == '.mp4') ct = 'video/mp4';

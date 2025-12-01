@@ -37,8 +37,12 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
     _descriptionController.dispose();
     _commentController.dispose();
     perPostCommentControllers.forEach((_, c) => c.dispose());
-    _previewChewieControllers.values.forEach((c) => c.dispose());
-    _previewVideoControllers.values.forEach((c) => c.dispose());
+    for (var c in _previewChewieControllers.values) {
+      c.dispose();
+    }
+    for (var c in _previewVideoControllers.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -104,13 +108,13 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
       String videoUrl = '';
       final ts = DateTime.now().millisecondsSinceEpoch;
       if (_pickedImage != null) {
-        final fn = 'job_${ts}.jpg';
+        final fn = 'job_$ts.jpg';
         imageUrl = await sb.uploadPostImage(_pickedImage!, fileName: fn);
       }
       if (_pickedVideo != null) {
         // Compress/transcode to MP4 (H.264/AAC) when possible
         final prepared = await _prepareVideoForUpload(_pickedVideo!);
-        final fn = 'job_${ts}.mp4';
+        final fn = 'job_$ts.mp4';
         videoUrl = await sb.uploadVideo(prepared, fileName: fn);
       }
 

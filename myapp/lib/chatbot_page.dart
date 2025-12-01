@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 class ChatbotPage extends StatefulWidget {
-  const ChatbotPage({Key? key}) : super(key: key);
+  const ChatbotPage({super.key});
 
   static MaterialPageRoute route() {
     return MaterialPageRoute(builder: (context) => const ChatbotPage());

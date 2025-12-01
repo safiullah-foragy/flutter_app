@@ -140,22 +140,27 @@ class NotificationService {
     try {
       debugPrint('=== Starting call ringtone playback ===');
       debugPrint('Asset path: $assetPath');
+      debugPrint('Platform: ${kIsWeb ? "Web" : "Mobile"}');
       
       await stopCallRingtone(); // Stop any existing player
       
       _ringtonePlayer = AudioPlayer();
       debugPrint('AudioPlayer created');
       
-      // Configure for ringtone (loud, looping)
-      await _ringtonePlayer!.setAudioContext(AudioContext(
-        android: const AudioContextAndroid(
-          isSpeakerphoneOn: true,
-          contentType: AndroidContentType.music,
-          usageType: AndroidUsageType.notificationRingtone,
-          audioFocus: AndroidAudioFocus.gain,
-        ),
-      ));
-      debugPrint('Audio context configured');
+      // Configure for ringtone (loud, looping) - only on Android
+      if (!kIsWeb) {
+        await _ringtonePlayer!.setAudioContext(AudioContext(
+          android: const AudioContextAndroid(
+            isSpeakerphoneOn: true,
+            contentType: AndroidContentType.music,
+            usageType: AndroidUsageType.notificationRingtone,
+            audioFocus: AndroidAudioFocus.gain,
+          ),
+        ));
+        debugPrint('Audio context configured for Android');
+      } else {
+        debugPrint('Web platform - skipping audio context');
+      }
       
       await _ringtonePlayer!.setReleaseMode(ReleaseMode.loop); // Loop until stopped
       await _ringtonePlayer!.setVolume(1.0);

@@ -1001,7 +1001,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             children: [
               const Icon(Icons.error_outline, color: Colors.red),
               const SizedBox(height: 8),
-              Text('Video error: ' + errorMessage),
+              Text('Video error: $errorMessage'),
             ],
           ),
         ),

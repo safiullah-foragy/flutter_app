@@ -168,7 +168,7 @@ class _JobSearchPageState extends State<JobSearchPage> {
                 // Source Filter Dropdown
                 if (sources.isNotEmpty)
                   DropdownButtonFormField<String>(
-                    value: selectedSource ?? 'All',
+                    initialValue: selectedSource ?? 'All',
                     decoration: InputDecoration(
                       labelText: 'Filter by Source',
                       prefixIcon: const Icon(Icons.filter_list),
@@ -212,8 +212,8 @@ class _JobSearchPageState extends State<JobSearchPage> {
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _fetchJobs,
-        child: const Icon(Icons.refresh),
         tooltip: 'Refresh Jobs',
+        child: const Icon(Icons.refresh),
       ),
     );
   }
