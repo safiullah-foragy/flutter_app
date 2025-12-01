@@ -4,7 +4,9 @@ A comprehensive social media application built with Flutter, Firebase, and Supab
 
 ## 🌐 Live Demo
 
-**Web App:** [https://safiullah-foragy.github.io/flutter_app/](https://safiullah-foragy.github.io/flutter_app/)
+**Primary (Firebase Hosting):** [https://myapp-6cbbf.web.app](https://myapp-6cbbf.web.app)
+
+**Alternative (GitHub Pages):** [https://safiullah-foragy.github.io/flutter_app/](https://safiullah-foragy.github.io/flutter_app/)
 
 ## ✨ Features
 
@@ -103,4 +105,6 @@ Contributions, issues, and feature requests are welcome!
 
 ---
 
-**Try it now:** [https://safiullah-foragy.github.io/flutter_app/](https://safiullah-foragy.github.io/flutter_app/)
+**🚀 Try it now:**
+- **Firebase Hosting:** [https://myapp-6cbbf.web.app](https://myapp-6cbbf.web.app) ⭐ **Recommended**
+- **GitHub Pages:** [https://safiullah-foragy.github.io/flutter_app/](https://safiullah-foragy.github.io/flutter_app/)
