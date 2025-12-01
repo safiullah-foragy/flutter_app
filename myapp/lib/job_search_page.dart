@@ -44,10 +44,16 @@ class _JobSearchPageState extends State<JobSearchPage> {
     });
 
     try {
+      // First try with longer timeout (Render free tier can take 50+ seconds to wake up)
       final response = await http.get(
         Uri.parse('$apiBaseUrl/api/jobs?limit=100'),
         headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(
+        const Duration(seconds: 60), // Increased to 60 seconds for Render wake-up
+        onTimeout: () {
+          throw Exception('The server is waking up (Render free tier). Please wait and try again.');
+        },
+      );
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -72,7 +78,9 @@ class _JobSearchPageState extends State<JobSearchPage> {
       setState(() {
         isLoading = false;
         hasError = true;
-        errorMessage = 'Failed to load jobs: $e';
+        errorMessage = e.toString().contains('waking up')
+            ? 'Job API is starting up (free tier). Please tap Retry in 30 seconds.'
+            : 'Failed to load jobs: $e';
       });
     }
   }
