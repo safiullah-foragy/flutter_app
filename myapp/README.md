@@ -1,6 +1,10 @@
 # myapp
 
-A new Flutter project.
+A Flutter-based social media and communication app with real-time messaging, audio/video calls, group chats, and newsfeed features.
+
+## 🌐 Live Demo
+
+**Web App**: [https://myapp-6cbbf.web.app](https://myapp-6cbbf.web.app)
 
 ## Getting Started
 
