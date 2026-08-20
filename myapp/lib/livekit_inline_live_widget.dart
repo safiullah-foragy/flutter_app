@@ -169,6 +169,23 @@ class _LiveKitInlineLiveWidgetState extends State<LiveKitInlineLiveWidget>
             }
           }
         })
+        ..on<LocalTrackPublishedEvent>((e) {
+          debugPrint('LiveKit: Local track published ${e.publication.kind}');
+          if (e.publication.track is VideoTrack) {
+            if (mounted) {
+              setState(() {
+                _localVideoTrack = e.publication.track as VideoTrack;
+              });
+            }
+          }
+        })
+        ..on<LocalTrackUnpublishedEvent>((e) {
+          if (e.publication.track == _localVideoTrack) {
+            if (mounted) {
+              setState(() => _localVideoTrack = null);
+            }
+          }
+        })
         ..on<RoomDisconnectedEvent>((e) {
           debugPrint('LiveKit: Room disconnected');
           if (mounted) {
@@ -185,22 +202,21 @@ class _LiveKitInlineLiveWidgetState extends State<LiveKitInlineLiveWidget>
           defaultCameraCaptureOptions: CameraCaptureOptions(
             maxFrameRate: 30,
             params: VideoParametersPresets.h720_169,
+            cameraPosition: CameraPosition.front,
           ),
         ),
       );
 
       if (widget.isHost) {
         // Publish host camera and microphone
-        await _room!.localParticipant?.setCameraEnabled(true);
+        final camPub = await _room!.localParticipant?.setCameraEnabled(true);
         await _room!.localParticipant?.setMicrophoneEnabled(true);
 
-        final videoPub = _room!.localParticipant?.videoTrackPublications.firstOrNull;
-        if (videoPub?.track is VideoTrack) {
-          if (mounted) {
-            setState(() {
-              _localVideoTrack = videoPub?.track as VideoTrack;
-            });
-          }
+        final rawTrack = camPub?.track ?? _room!.localParticipant?.videoTrackPublications.firstOrNull?.track;
+        if (rawTrack is VideoTrack && mounted) {
+          setState(() {
+            _localVideoTrack = rawTrack as VideoTrack;
+          });
         }
       } else {
         // Find existing remote video track if host is already streaming

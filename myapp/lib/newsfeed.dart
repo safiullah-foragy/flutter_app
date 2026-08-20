@@ -1611,40 +1611,44 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                         ),
                       ),
                       const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          _buildComposerAction(Icons.photo_library_outlined, 'Photo', Colors.green, _pickImage),
-                          const SizedBox(width: 6),
-                          _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.blue, _pickVideo),
-                          const SizedBox(width: 6),
-                          _buildComposerAction(Icons.fiber_manual_record_rounded, 'Go Live (5m)', Colors.redAccent, _startLiveBroadcast),
-                          const Spacer(),
-                          GestureDetector(
-                            onTap: _createPost,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                              decoration: BoxDecoration(
-                                gradient: ThemeController.instance.appBarGradient,
-                                borderRadius: BorderRadius.circular(20),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: ThemeController.instance.primaryColor.withOpacity(0.35),
-                                    blurRadius: 6,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.send_rounded, size: 14, color: Colors.white),
-                                  SizedBox(width: 5),
-                                  Text('Post', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                                ],
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: Row(
+                          children: [
+                            _buildComposerAction(Icons.photo_library_outlined, 'Photo', Colors.green, _pickImage),
+                            const SizedBox(width: 6),
+                            _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.blue, _pickVideo),
+                            const SizedBox(width: 6),
+                            _buildComposerAction(Icons.fiber_manual_record_rounded, 'Go Live (5m)', Colors.redAccent, _startLiveBroadcast),
+                            const SizedBox(width: 10),
+                            GestureDetector(
+                              onTap: _createPost,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                decoration: BoxDecoration(
+                                  gradient: ThemeController.instance.appBarGradient,
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: ThemeController.instance.primaryColor.withOpacity(0.35),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.send_rounded, size: 14, color: Colors.white),
+                                    SizedBox(width: 5),
+                                    Text('Post', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                       if (_selectedImage != null || _selectedVideo != null)
                         Stack(
@@ -1908,74 +1912,78 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                             : null,
                       ),
                       const SizedBox(width: 10),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                post['user_data']?['name'] ?? 'Unknown User',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              if (post['is_live'] == true || post['post_type'] == 'live') ...[
-                                const SizedBox(width: 8),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                                  decoration: BoxDecoration(
-                                    color: Colors.redAccent,
-                                    borderRadius: BorderRadius.circular(10),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.redAccent.withOpacity(0.35),
-                                        blurRadius: 4,
-                                        offset: const Offset(0, 1),
-                                      ),
-                                    ],
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    post['user_data']?['name'] ?? 'Unknown User',
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  child: const Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
-                                      SizedBox(width: 3),
-                                      Text(
-                                        'LIVE',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.bold,
-                                          letterSpacing: 0.5,
+                                ),
+                                if (post['is_live'] == true || post['post_type'] == 'live') ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                    decoration: BoxDecoration(
+                                      color: Colors.redAccent,
+                                      borderRadius: BorderRadius.circular(10),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.redAccent.withOpacity(0.35),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 1),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
+                                        SizedBox(width: 3),
+                                        Text(
+                                          'LIVE',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ),
+                                ],
                               ],
-                            ],
-                          ),
-                          Row(
-                            children: [
-                              Text(
-                                DateFormat('MMM dd, yyyy - HH:mm').format(
-                                  DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
+                            ),
+                            Row(
+                              children: [
+                                Text(
+                                  DateFormat('MMM dd, yyyy - HH:mm').format(
+                                    DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
+                                  ),
+                                  style: const TextStyle(color: Colors.grey, fontSize: 12),
                                 ),
-                                style: const TextStyle(color: Colors.grey, fontSize: 12),
-                              ),
-                              if (isOwner) ...[
-                                const SizedBox(width: 8),
-                                Icon(
-                                  isPrivate ? Icons.lock : Icons.public,
-                                  size: 14,
-                                  color: Colors.grey,
-                                ),
+                                if (isOwner) ...[
+                                  const SizedBox(width: 8),
+                                  Icon(
+                                    isPrivate ? Icons.lock : Icons.public,
+                                    size: 14,
+                                    color: Colors.grey,
+                                  ),
+                                ],
                               ],
-                            ],
-                          ),
-                        ],
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-                const Spacer(),
                 if (isOwner)
                   PopupMenuButton<String>(
                     onSelected: (value) {

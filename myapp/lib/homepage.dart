@@ -1810,41 +1810,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      DateFormat('MMM dd, yyyy - HH:mm').format(
-                        DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
-                      ),
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                    if (post['is_live'] == true || post['post_type'] == 'live') ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                        decoration: BoxDecoration(
-                          color: Colors.redAccent,
-                          borderRadius: BorderRadius.circular(10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Text(
+                          DateFormat('MMM dd, yyyy - HH:mm').format(
+                            DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
+                          ),
+                          style: const TextStyle(color: Colors.grey, fontSize: 12),
                         ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
-                            SizedBox(width: 3),
-                            Text(
-                              'LIVE',
-                              style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                        if (post['is_live'] == true || post['post_type'] == 'live') ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent,
+                              borderRadius: BorderRadius.circular(10),
                             ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
+                                SizedBox(width: 3),
+                                Text(
+                                  'LIVE',
+                                  style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 Row(
                   children: [
                     IconButton(

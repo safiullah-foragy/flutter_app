@@ -10,4 +10,16 @@ class LiveKitConfig {
     'LIVEKIT_TOKEN_SERVER_URL',
     defaultValue: 'https://livekit-token-server-gh3s.onrender.com',
   );
+
+  /// LiveKit API Key
+  static const String apiKey = String.fromEnvironment(
+    'LIVEKIT_API_KEY',
+    defaultValue: 'APIM3QFCjJeVK7d',
+  );
+
+  /// LiveKit API Secret
+  static const String apiSecret = String.fromEnvironment(
+    'LIVEKIT_API_SECRET',
+    defaultValue: 'NcAHWaxJvKZAjuV7mmcafeyH5Y3nfvWUnXktmOPwFW1B',
+  );
 }
