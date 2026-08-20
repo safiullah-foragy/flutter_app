@@ -9,7 +9,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'agora_config.dart';
 import 'agora_token_service.dart';
-import 'agora_web_client.dart' if (dart.library.io) 'agora_web_client_stub.dart';
 import 'theme_controller.dart';
 
 class LiveStreamPage extends StatefulWidget {
@@ -37,39 +36,38 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   RtcEngine? _engine;
-  AgoraWebClient? _webClient;
   String? _token;
   int _localUid = 0;
-  int? _hostRemoteUid;
-  final Set<int> _viewerUids = {};
-  bool _isJoined = false;
-  bool _isMuted = false;
-  bool _isCameraOff = false;
-  bool _isFrontCamera = true;
-  bool _isEngineReady = false;
+  int? _remoteHostUid;
+  final Set<int> _remoteUids = {};
+  bool _joined = false;
+  bool _muted = false;
+  bool _frontCamera = true;
+  bool _speakerOn = true;
+  bool _engineInitialized = false;
 
-  // 5 Minutes Max Timer (300 seconds)
+  // 5-Minute Timer (300 seconds)
   static const int _maxLiveDurationSeconds = 300;
   int _remainingSeconds = _maxLiveDurationSeconds;
   int _elapsedSeconds = 0;
   Timer? _countdownTimer;
 
-  // Live Comments
+  // Comments
   final TextEditingController _commentController = TextEditingController();
   final ScrollController _commentsScrollController = ScrollController();
   List<Map<String, dynamic>> _liveComments = [];
   StreamSubscription<QuerySnapshot>? _commentsSub;
   StreamSubscription<DocumentSnapshot>? _postStreamSub;
 
-  // Real-time Viewer Counter
+  // Viewers
   int _viewerCount = 1;
   StreamSubscription<QuerySnapshot>? _viewersSub;
 
-  // Floating Reactions Animation
+  // Floating Reactions
   final List<_FloatingReaction> _floatingReactions = [];
   StreamSubscription<QuerySnapshot>? _reactionsSub;
 
-  // Live Pulse Animation
+  // Pulse animation for LIVE badge
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
@@ -84,8 +82,8 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
-    _initAgoraAndLiveRoom();
-    _setupFirestoreListeners();
+    _initLive();
+    _setupFirestore();
   }
 
   @override
@@ -102,87 +100,48 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
     if (widget.isHost) {
       _endLiveInFirestore();
     } else {
-      _removeViewerFromFirestore();
+      _removeViewer();
     }
 
-    _leaveAgoraChannel();
+    _leaveAndReleaseEngine();
     super.dispose();
   }
 
-  Future<void> _initAgoraAndLiveRoom() async {
+  Future<void> _initLive() async {
     _localUid = Random().nextInt(0x7FFFFFFF);
 
     if (widget.isHost) {
-      // Start 5-minute countdown for the host
-      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
         if (!mounted) return;
         setState(() {
           _elapsedSeconds++;
           _remainingSeconds = max(0, _maxLiveDurationSeconds - _elapsedSeconds);
         });
-
         if (_remainingSeconds <= 0) {
-          timer.cancel();
-          _showTimeExpiredDialogAndEnd();
+          t.cancel();
+          _onTimeExpired();
         }
       });
     }
 
-    if (kIsWeb) {
-      await _initWeb();
-    } else {
+    if (!kIsWeb) {
       await _initNative();
-    }
-  }
-
-  Future<void> _initWeb() async {
-    try {
-      _webClient = AgoraWebClient();
-      await _webClient!.initialize(AgoraConfig.appId);
-
-      _webClient!.onUserJoined.listen((remoteUid) {
-        if (mounted) {
-          setState(() {
-            _hostRemoteUid = remoteUid;
-            _viewerUids.add(remoteUid);
-          });
-        }
-      });
-
-      _webClient!.onUserLeft.listen((remoteUid) {
-        if (mounted) {
-          setState(() {
-            if (_hostRemoteUid == remoteUid) _hostRemoteUid = null;
-            _viewerUids.remove(remoteUid);
-          });
-        }
-      });
-
-      _isEngineReady = true;
-      _token = await AgoraTokenService.fetchRtcToken(
-        channelName: widget.channelName,
-        uid: _localUid,
-        role: widget.isHost ? 'publisher' : 'subscriber',
-      ).catchError((_) => '');
-
-      await _webClient!.join(
-        token: _token ?? '',
-        channelName: widget.channelName,
-        uid: _localUid,
-        enableVideo: true,
-      );
-
-      if (mounted) setState(() => _isJoined = true);
-    } catch (e) {
-      debugPrint('AgoraWeb Live error: $e');
     }
   }
 
   Future<void> _initNative() async {
     try {
-      if (widget.isHost) {
-        await Permission.camera.request();
-        await Permission.microphone.request();
+      final micStatus = await Permission.microphone.request();
+      if (!micStatus.isGranted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Microphone permission is required.')),
+        );
+      }
+      final camStatus = await Permission.camera.request();
+      if (!camStatus.isGranted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Camera permission is required.')),
+        );
       }
     } catch (_) {}
 
@@ -190,63 +149,72 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
       _engine = createAgoraRtcEngine();
       await _engine!.initialize(RtcEngineContext(
         appId: AgoraConfig.appId,
-        channelProfile: ChannelProfileType.channelProfileLiveBroadcasting,
+        channelProfile: ChannelProfileType.channelProfileCommunication,
       ));
 
       _engine!.registerEventHandler(
         RtcEngineEventHandler(
-          onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
-            debugPrint('Live Agora: Joined channel ${connection.channelId}');
-            if (mounted) setState(() => _isJoined = true);
+          onJoinChannelSuccess: (RtcConnection conn, int elapsed) {
+            debugPrint('Live: Joined channel ${conn.channelId} with uid ${conn.localUid}');
+            if (mounted) setState(() => _joined = true);
+            try { _engine?.setDefaultAudioRouteToSpeakerphone(true); } catch (_) {}
+            try { _engine?.setEnableSpeakerphone(true); } catch (_) {}
+            try { _engine?.adjustRecordingSignalVolume(100); } catch (_) {}
+            try { _engine?.adjustPlaybackSignalVolume(100); } catch (_) {}
           },
-          onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
-            debugPrint('Live Agora: User joined uid $remoteUid');
+          onUserJoined: (RtcConnection conn, int remoteUid, int elapsed) {
+            debugPrint('Live: Remote user joined uid $remoteUid');
             if (mounted) {
               setState(() {
-                if (!widget.isHost && _hostRemoteUid == null) {
-                  _hostRemoteUid = remoteUid;
+                _remoteUids.add(remoteUid);
+                if (!widget.isHost) {
+                  _remoteHostUid ??= remoteUid;
                 }
-                _viewerUids.add(remoteUid);
               });
             }
+            try {
+              _engine?.muteRemoteAudioStream(uid: remoteUid, mute: false);
+              _engine?.muteRemoteVideoStream(uid: remoteUid, mute: false);
+              _engine?.adjustUserPlaybackSignalVolume(uid: remoteUid, volume: 100);
+              _engine?.muteAllRemoteAudioStreams(false);
+              _engine?.muteAllRemoteVideoStreams(false);
+            } catch (_) {}
           },
-          onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
-            debugPrint('Live Agora: User offline uid $remoteUid');
+          onUserOffline: (RtcConnection conn, int remoteUid, UserOfflineReasonType reason) {
+            debugPrint('Live: Remote user offline uid $remoteUid');
             if (mounted) {
               setState(() {
-                if (_hostRemoteUid == remoteUid) _hostRemoteUid = null;
-                _viewerUids.remove(remoteUid);
+                _remoteUids.remove(remoteUid);
+                if (_remoteHostUid == remoteUid) {
+                  _remoteHostUid = _remoteUids.isNotEmpty ? _remoteUids.first : null;
+                }
               });
-              if (!widget.isHost && _hostRemoteUid == null) {
-                // Host left
-                _showHostEndedLiveNotification();
+              if (!widget.isHost && _remoteUids.isEmpty) {
+                _onHostLeft();
               }
             }
           },
         ),
       );
 
-      await _engine!.enableVideo();
       await _engine!.enableAudio();
+      await _engine!.enableVideo();
 
       if (widget.isHost) {
-        await _engine!.setClientRole(role: ClientRoleType.clientRoleBroadcaster);
-        await _engine!.startPreview();
-      } else {
-        await _engine!.setClientRole(role: ClientRoleType.clientRoleAudience);
+        await _engine!.enableLocalVideo(true);
+        try { await _engine!.startPreview(); } catch (_) {}
       }
 
-      _isEngineReady = true;
+      _engineInitialized = true;
 
-      // Token Fetch
+      // Fetch Token
       try {
         _token = await AgoraTokenService.fetchRtcToken(
           channelName: widget.channelName,
           uid: _localUid,
-          role: widget.isHost ? 'publisher' : 'subscriber',
         );
       } catch (e) {
-        debugPrint('Live Agora Token fetch: $e');
+        debugPrint('Live Token fetch error: $e');
         _token = '';
       }
 
@@ -255,34 +223,30 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
         channelId: widget.channelName,
         uid: _localUid,
         options: ChannelMediaOptions(
-          clientRoleType: widget.isHost ? ClientRoleType.clientRoleBroadcaster : ClientRoleType.clientRoleAudience,
-          channelProfile: ChannelProfileType.channelProfileLiveBroadcasting,
           publishCameraTrack: widget.isHost,
           publishMicrophoneTrack: widget.isHost,
           autoSubscribeAudio: true,
           autoSubscribeVideo: true,
+          clientRoleType: widget.isHost ? ClientRoleType.clientRoleBroadcaster : ClientRoleType.clientRoleAudience,
         ),
       );
     } catch (e) {
-      debugPrint('Live Agora Native error: $e');
+      debugPrint('Live Agora initialization error: $e');
     }
   }
 
-  Future<void> _leaveAgoraChannel() async {
+  Future<void> _leaveAndReleaseEngine() async {
     try {
-      if (kIsWeb) {
-        await _webClient?.leave();
-      } else {
-        await _engine?.leaveChannel();
-        await _engine?.release();
+      if (_engine != null && _engineInitialized) {
+        await _engine!.leaveChannel();
+        await _engine!.release();
       }
     } catch (_) {}
   }
 
-  void _setupFirestoreListeners() {
+  void _setupFirestore() {
     final user = _auth.currentUser;
 
-    // Register active viewer
     if (!widget.isHost && user != null) {
       _firestore.collection('posts').doc(widget.postId).collection('live_viewers').doc(user.uid).set({
         'user_id': user.uid,
@@ -290,7 +254,6 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
       });
     }
 
-    // Viewers count listener
     _viewersSub = _firestore
         .collection('posts')
         .doc(widget.postId)
@@ -304,7 +267,6 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
       }
     });
 
-    // Live Comments listener
     _commentsSub = _firestore
         .collection('posts')
         .doc(widget.postId)
@@ -315,17 +277,14 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
         .listen((snap) {
       if (mounted) {
         final List<Map<String, dynamic>> comments = [];
-        for (var doc in snap.docs) {
-          comments.add({'id': doc.id, ...doc.data()});
+        for (var d in snap.docs) {
+          comments.add({'id': d.id, ...d.data()});
         }
-        setState(() {
-          _liveComments = comments;
-        });
+        setState(() => _liveComments = comments);
         _scrollToBottom();
       }
     });
 
-    // Live Reactions stream listener
     _reactionsSub = _firestore
         .collection('posts')
         .doc(widget.postId)
@@ -335,24 +294,23 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
         .snapshots()
         .listen((snap) {
       if (!mounted) return;
-      for (var doc in snap.docChanges) {
-        if (doc.type == DocumentChangeType.added) {
-          final data = doc.doc.data() as Map<String, dynamic>?;
+      for (var c in snap.docChanges) {
+        if (c.type == DocumentChangeType.added) {
+          final data = c.doc.data() as Map<String, dynamic>?;
           final emoji = data?['reaction'] as String? ?? '❤️';
           _addFloatingReaction(emoji);
         }
       }
     });
 
-    // Listen to post status (if host ended live from another device or ended)
     _postStreamSub = _firestore.collection('posts').doc(widget.postId).snapshots().listen((doc) {
       if (!mounted || !doc.exists) return;
       final data = doc.data() as Map<String, dynamic>?;
       if (data != null) {
-        final bool isLive = (data['is_live'] ?? false) as bool;
-        final String liveStatus = (data['live_status'] ?? '') as String;
+        final isLive = (data['is_live'] ?? false) as bool;
+        final liveStatus = (data['live_status'] ?? '') as String;
         if (!widget.isHost && (!isLive || liveStatus == 'ended')) {
-          _showHostEndedLiveNotification();
+          _onHostLeft();
         }
       }
     });
@@ -371,21 +329,16 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
   }
 
   void _addFloatingReaction(String emoji) {
-    final randomX = Random().nextDouble() * 120;
     final reaction = _FloatingReaction(
       id: UniqueKey().toString(),
       emoji: emoji,
-      startX: randomX,
+      startX: Random().nextDouble() * 120 + 20,
     );
-    setState(() {
-      _floatingReactions.add(reaction);
-    });
+    setState(() => _floatingReactions.add(reaction));
 
     Future.delayed(const Duration(milliseconds: 2000), () {
       if (mounted) {
-        setState(() {
-          _floatingReactions.removeWhere((r) => r.id == reaction.id);
-        });
+        setState(() => _floatingReactions.removeWhere((r) => r.id == reaction.id));
       }
     });
   }
@@ -399,14 +352,14 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
     if (user == null) return;
 
     try {
-      final userDoc = await _firestore.collection('users').doc(user.uid).get();
-      final userData = userDoc.data();
+      final uDoc = await _firestore.collection('users').doc(user.uid).get();
+      final uData = uDoc.data();
 
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       await _firestore.collection('posts').doc(widget.postId).collection('comments').add({
         'user_id': user.uid,
-        'user_name': userData?['name'] ?? 'User',
-        'user_image': userData?['profile_image'],
+        'user_name': uData?['name'] ?? 'User',
+        'user_image': uData?['profile_image'],
         'text': text,
         'timestamp': timestamp,
       });
@@ -449,55 +402,40 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
     } catch (_) {}
   }
 
-  Future<void> _removeViewerFromFirestore() async {
+  Future<void> _removeViewer() async {
     final user = _auth.currentUser;
     if (user == null) return;
     try {
-      await _firestore
-          .collection('posts')
-          .doc(widget.postId)
-          .collection('live_viewers')
-          .doc(user.uid)
-          .delete();
+      await _firestore.collection('posts').doc(widget.postId).collection('live_viewers').doc(user.uid).delete();
     } catch (_) {}
   }
 
-  void _showTimeExpiredDialogAndEnd() {
+  void _onTimeExpired() {
     if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.timer_off_rounded, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('5-Minute Limit Reached'),
-          ],
-        ),
-        content: const Text('Your live broadcast has reached the 5-minute maximum duration and has now concluded.'),
+        title: const Text('5-Minute Limit Reached'),
+        content: const Text('Your live broadcast has reached the 5-minute maximum limit.'),
         actions: [
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: ThemeController.instance.primaryColor,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            ),
             onPressed: () {
               Navigator.pop(ctx);
               Navigator.pop(context);
             },
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
+            child: const Text('OK'),
           ),
         ],
       ),
     );
   }
 
-  void _showHostEndedLiveNotification() {
+  void _onHostLeft() {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('The host has ended this live broadcast.')),
+      const SnackBar(content: Text('The live broadcast has ended.')),
     );
     Navigator.pop(context);
   }
@@ -507,18 +445,15 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('End Live Broadcast?'),
-        content: const Text('Are you sure you want to finish and end your live stream?'),
+        title: const Text('End Live Stream?'),
+        content: const Text('Are you sure you want to end your live stream?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('End Live', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
@@ -532,33 +467,23 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
     }
   }
 
-  // Toggle Camera
-  Future<void> _toggleCamera() async {
-    if (_engine == null) return;
-    _isCameraOff = !_isCameraOff;
-    await _engine!.muteLocalVideoStream(_isCameraOff);
-    setState(() {});
-  }
-
-  // Flip Camera
   Future<void> _flipCamera() async {
     if (_engine == null) return;
     await _engine!.switchCamera();
-    setState(() => _isFrontCamera = !_isFrontCamera);
+    setState(() => _frontCamera = !_frontCamera);
   }
 
-  // Toggle Mic
   Future<void> _toggleMute() async {
     if (_engine == null) return;
-    _isMuted = !_isMuted;
-    await _engine!.muteLocalAudioStream(_isMuted);
+    _muted = !_muted;
+    await _engine!.muteLocalAudioStream(_muted);
     setState(() {});
   }
 
-  String _formatDuration(int totalSeconds) {
-    final minutes = totalSeconds ~/ 60;
-    final seconds = totalSeconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  String _formatDuration(int sec) {
+    final m = sec ~/ 60;
+    final s = sec % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -567,93 +492,99 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 1. Live Video Surface
+          // 1. Full Screen Camera Video View
           Positioned.fill(
-            child: _buildVideoView(),
+            child: _buildVideoSurface(),
           ),
 
-          // 2. Top Header Bar (Host Profile, LIVE Badge, 5-min timer, Viewer Count, Close Button)
+          // 2. Top Header (Host avatar/name, LIVE badge, 5m timer, viewer count, end/close button)
           Positioned(
             top: MediaQuery.of(context).padding.top + 10,
             left: 12,
             right: 12,
-            child: _buildTopBar(),
+            child: _buildTopHeader(),
           ),
 
-          // 3. Floating Animated Reactions Overlay
+          // 3. Floating Reactions
           Positioned(
-            bottom: 120,
-            right: 16,
-            width: 150,
-            height: 250,
+            bottom: 130,
+            right: 12,
+            width: 160,
+            height: 260,
             child: IgnorePointer(
               child: Stack(
-                children: _floatingReactions.map((r) => _buildAnimatedReactionItem(r)).toList(),
+                children: _floatingReactions.map((r) => _buildAnimatedEmoji(r)).toList(),
               ),
             ),
           ),
 
-          // 4. Bottom Comments Overlay & Input Bar
+          // 4. Bottom Comments Overlay & Reaction Buttons
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
-            child: _buildBottomOverlay(),
+            child: _buildBottomBar(),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildVideoView() {
+  Widget _buildVideoSurface() {
     if (kIsWeb) {
       return Center(
         child: Text(
-          widget.isHost ? '🔴 Broadcasting Live Stream (Web)' : '👁️ Watching Live Stream (Web)',
+          widget.isHost ? '🔴 Live Stream Broadcast' : '👁️ Watching Live Stream',
           style: const TextStyle(color: Colors.white, fontSize: 16),
         ),
       );
     }
 
-    if (_engine == null || !_isEngineReady) {
+    if (_engine == null || !_engineInitialized) {
       return const Center(child: CircularProgressIndicator(color: Colors.redAccent));
     }
 
     if (widget.isHost) {
-      if (_isCameraOff) {
-        return Container(
-          color: Colors.grey[900],
-          child: const Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.videocam_off, color: Colors.white54, size: 60),
-                SizedBox(height: 10),
-                Text('Camera is Turned Off', style: TextStyle(color: Colors.white54, fontSize: 15)),
-              ],
+      // Broadcaster sees own camera full-screen
+      return ClipRect(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: MediaQuery.of(context).size.width,
+            height: MediaQuery.of(context).size.height,
+            child: AgoraVideoView(
+              controller: VideoViewController(
+                rtcEngine: _engine!,
+                canvas: const VideoCanvas(uid: 0),
+              ),
+            ),
+          ),
+        ),
+      );
+    } else {
+      // Audience sees host remote camera full-screen
+      final hostUid = _remoteHostUid ?? (_remoteUids.isNotEmpty ? _remoteUids.first : null);
+      if (hostUid != null) {
+        return ClipRect(
+          child: FittedBox(
+            fit: BoxFit.cover,
+            child: SizedBox(
+              width: MediaQuery.of(context).size.width,
+              height: MediaQuery.of(context).size.height,
+              child: AgoraVideoView(
+                controller: VideoViewController.remote(
+                  rtcEngine: _engine!,
+                  canvas: VideoCanvas(uid: hostUid),
+                  connection: RtcConnection(channelId: widget.channelName),
+                ),
+              ),
             ),
           ),
         );
       }
-      return AgoraVideoView(
-        controller: VideoViewController(
-          rtcEngine: _engine!,
-          canvas: const VideoCanvas(uid: 0),
-        ),
-      );
-    } else {
-      // Audience View
-      if (_hostRemoteUid != null) {
-        return AgoraVideoView(
-          controller: VideoViewController.remote(
-            rtcEngine: _engine!,
-            canvas: VideoCanvas(uid: _hostRemoteUid),
-            connection: RtcConnection(channelId: widget.channelName),
-          ),
-        );
-      }
+
       return Container(
-        color: Colors.black,
+        color: const Color(0xFF0F1117),
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -661,18 +592,18 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
               ScaleTransition(
                 scale: _pulseAnimation,
                 child: Container(
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.all(22),
                   decoration: BoxDecoration(
-                    color: Colors.redAccent.withOpacity(0.2),
+                    color: Colors.redAccent.withOpacity(0.25),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.live_tv_rounded, color: Colors.redAccent, size: 50),
+                  child: const Icon(Icons.live_tv_rounded, color: Colors.redAccent, size: 55),
                 ),
               ),
               const SizedBox(height: 16),
-              const Text(
-                'Connecting to Live Stream...',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              Text(
+                'Connecting to ${widget.hostUserData?['name'] ?? 'Host'}\'s Live...',
+                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               ),
             ],
           ),
@@ -681,18 +612,18 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
     }
   }
 
-  Widget _buildTopBar() {
+  Widget _buildTopHeader() {
     final hostName = widget.hostUserData?['name'] ?? 'Host';
     final hostImage = widget.hostUserData?['profile_image'];
 
     return Row(
       children: [
-        // Host Info
+        // Host Info Pill
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.55),
-            borderRadius: BorderRadius.circular(24),
+            color: Colors.black54,
+            borderRadius: BorderRadius.circular(25),
             border: Border.all(color: Colors.white24),
           ),
           child: Row(
@@ -709,19 +640,13 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    hostName,
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
+                  Text(hostName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12.5)),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const Icon(Icons.remove_red_eye_rounded, color: Colors.white70, size: 11),
                       const SizedBox(width: 3),
-                      Text(
-                        '$_viewerCount',
-                        style: const TextStyle(color: Colors.white70, fontSize: 11),
-                      ),
+                      Text('$_viewerCount', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                     ],
                   ),
                 ],
@@ -733,7 +658,7 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
 
         const SizedBox(width: 8),
 
-        // Glowing LIVE Badge with Timer
+        // LIVE Badge with Timer
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
@@ -743,7 +668,6 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
               BoxShadow(
                 color: Colors.redAccent.withOpacity(0.6),
                 blurRadius: 8,
-                spreadRadius: 1,
               ),
             ],
           ),
@@ -755,16 +679,13 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
                 child: Container(
                   width: 7,
                   height: 7,
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
+                  decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
                 ),
               ),
               const SizedBox(width: 5),
               Text(
                 widget.isHost ? 'LIVE • ${_formatDuration(_remainingSeconds)}' : 'LIVE',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11.5),
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
               ),
             ],
           ),
@@ -772,41 +693,75 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
 
         const Spacer(),
 
-        // Host Tools (Camera flip, Mic mute)
         if (widget.isHost) ...[
-          IconButton(
-            onPressed: _flipCamera,
-            icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white, size: 22),
-            style: IconButton.styleFrom(backgroundColor: Colors.black45),
+          // Camera Flip Button
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white24),
+            ),
+            child: IconButton(
+              onPressed: _flipCamera,
+              tooltip: 'Switch Camera',
+              icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white, size: 22),
+            ),
           ),
-          const SizedBox(width: 4),
-          IconButton(
-            onPressed: _toggleMute,
-            icon: Icon(_isMuted ? Icons.mic_off_rounded : Icons.mic_rounded, color: _isMuted ? Colors.redAccent : Colors.white, size: 22),
-            style: IconButton.styleFrom(backgroundColor: Colors.black45),
+          const SizedBox(width: 8),
+          // End Live Button
+          GestureDetector(
+            onTap: _confirmEndLive,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.redAccent,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.redAccent.withOpacity(0.5),
+                    blurRadius: 6,
+                  ),
+                ],
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.call_end_rounded, color: Colors.white, size: 16),
+                  SizedBox(width: 4),
+                  Text(
+                    'End Live',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(width: 4),
+        ] else ...[
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white24),
+            ),
+            child: IconButton(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close_rounded, color: Colors.white, size: 22),
+            ),
+          ),
         ],
-
-        // Close / End Button
-        IconButton(
-          onPressed: widget.isHost ? _confirmEndLive : () => Navigator.pop(context),
-          icon: const Icon(Icons.close_rounded, color: Colors.white, size: 24),
-          style: IconButton.styleFrom(backgroundColor: Colors.black54),
-        ),
       ],
     );
   }
 
-  Widget _buildAnimatedReactionItem(_FloatingReaction reaction) {
+  Widget _buildAnimatedEmoji(_FloatingReaction r) {
     return _AnimatedFloatingEmoji(
-      key: ValueKey(reaction.id),
-      emoji: reaction.emoji,
-      startX: reaction.startX,
+      key: ValueKey(r.id),
+      emoji: r.emoji,
+      startX: r.startX,
     );
   }
 
-  Widget _buildBottomOverlay() {
+  Widget _buildBottomBar() {
     return Container(
       padding: EdgeInsets.only(
         left: 12,
@@ -820,7 +775,7 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
           end: Alignment.topCenter,
           colors: [
             Colors.black.withOpacity(0.85),
-            Colors.black.withOpacity(0.3),
+            Colors.black.withOpacity(0.2),
             Colors.transparent,
           ],
         ),
@@ -829,17 +784,17 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Live Comments List (Transparent scroll view)
+          // Live Chat comments list
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 180),
             child: ListView.builder(
               controller: _commentsScrollController,
               shrinkWrap: true,
               itemCount: _liveComments.length,
-              itemBuilder: (context, index) {
-                final comment = _liveComments[index];
-                final name = comment['user_name'] ?? 'User';
-                final text = comment['text'] ?? '';
+              itemBuilder: (context, idx) {
+                final c = _liveComments[idx];
+                final name = c['user_name'] ?? 'User';
+                final text = c['text'] ?? '';
                 return Container(
                   margin: const EdgeInsets.symmetric(vertical: 3),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -852,11 +807,7 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
                       children: [
                         TextSpan(
                           text: '$name  ',
-                          style: const TextStyle(
-                            color: Color(0xFF64B5F6),
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
+                          style: const TextStyle(color: Color(0xFF64B5F6), fontWeight: FontWeight.bold, fontSize: 13),
                         ),
                         TextSpan(
                           text: text,
@@ -872,26 +823,26 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
 
           const SizedBox(height: 10),
 
-          // Quick Reactions Bar
+          // Quick reaction emoji bar
           Row(
             children: [
-              _buildReactionButton('❤️'),
+              _buildEmojiBtn('❤️'),
               const SizedBox(width: 6),
-              _buildReactionButton('🔥'),
+              _buildEmojiBtn('🔥'),
               const SizedBox(width: 6),
-              _buildReactionButton('👍'),
+              _buildEmojiBtn('👍'),
               const SizedBox(width: 6),
-              _buildReactionButton('😮'),
+              _buildEmojiBtn('😮'),
               const SizedBox(width: 6),
-              _buildReactionButton('👏'),
+              _buildEmojiBtn('👏'),
               const SizedBox(width: 6),
-              _buildReactionButton('😂'),
+              _buildEmojiBtn('😂'),
             ],
           ),
 
           const SizedBox(height: 10),
 
-          // Comment Input Box
+          // Live comment input
           Row(
             children: [
               Expanded(
@@ -924,12 +875,6 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
                   decoration: BoxDecoration(
                     color: ThemeController.instance.primaryColor,
                     shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: ThemeController.instance.primaryColor.withOpacity(0.4),
-                        blurRadius: 6,
-                      ),
-                    ],
                   ),
                   child: const Icon(Icons.send_rounded, color: Colors.white, size: 18),
                 ),
@@ -941,7 +886,7 @@ class _LiveStreamPageState extends State<LiveStreamPage> with TickerProviderStat
     );
   }
 
-  Widget _buildReactionButton(String emoji) {
+  Widget _buildEmojiBtn(String emoji) {
     return GestureDetector(
       onTap: () => _sendReaction(emoji),
       child: Container(

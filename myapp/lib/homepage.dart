@@ -23,6 +23,7 @@ import 'background_tasks.dart';
 import 'theme_controller.dart';
 import 'cv_generator_page.dart';
 import 'live_stream_page.dart';
+import 'inline_live_widget.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -1866,100 +1867,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
             ),
             const SizedBox(height: 10),
             if (post['text']?.isNotEmpty ?? false) Text(post['text']),
-            if (post['is_live'] == true && post['live_status'] == 'active')
-              Container(
-                margin: const EdgeInsets.symmetric(vertical: 8),
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.red.shade900.withOpacity(0.9),
-                      Colors.black87,
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.red.withOpacity(0.3),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                  border: Border.all(color: Colors.redAccent.withOpacity(0.5)),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.redAccent.withOpacity(0.2),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.live_tv_rounded, color: Colors.redAccent, size: 28),
-                    ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.redAccent,
-                                  borderRadius: BorderRadius.all(Radius.circular(8)),
-                                ),
-                                child: Text(
-                                  'LIVE NOW',
-                                  style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                              SizedBox(width: 6),
-                              Text(
-                                'Interactive Broadcast',
-                                style: TextStyle(color: Colors.white70, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Broadcasting Live',
-                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                        ],
-                      ),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.redAccent,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      ),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => LiveStreamPage(
-                              postId: postId,
-                              channelName: (post['channel_id'] ?? postId) as String,
-                              isHost: _auth.currentUser?.uid == post['user_id'],
-                              hostUserId: (post['user_id'] ?? '') as String,
-                              hostUserData: userData,
-                            ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 18),
-                      label: Text(
-                        _auth.currentUser?.uid == post['user_id'] ? 'Enter Live' : 'Watch Live',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
+            if ((post['is_live'] == true && post['live_status'] != 'ended') || post['live_status'] == 'active')
+              InlineLiveWidget(
+                key: ValueKey('live_$postId'),
+                postId: postId,
+                channelName: (post['channel_id'] ?? postId) as String,
+                isHost: _auth.currentUser?.uid == post['user_id'],
+                hostUserId: (post['user_id'] ?? '') as String,
+                hostUserData: userData,
               ),
             const SizedBox(height: 10),
             if (post['image_url']?.isNotEmpty ?? false)

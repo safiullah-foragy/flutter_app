@@ -27,6 +27,7 @@ import 'job_search_page.dart';
 import 'cv_generator_page.dart';
 import 'theme_controller.dart';
 import 'live_stream_page.dart';
+import 'inline_live_widget.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -789,16 +790,10 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       _isLive = false;
 
       if (mounted) {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => LiveStreamPage(
-              postId: docRef.id,
-              channelName: channelName,
-              isHost: true,
-              hostUserId: user.uid,
-              hostUserData: userData,
-            ),
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Colors.redAccent,
+            content: Text('🔴 You are now LIVE on your feed!'),
           ),
         );
       }
@@ -2010,100 +2005,14 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             ),
             const SizedBox(height: 10),
             if (post['text']?.isNotEmpty ?? false) Text(post['text']),
-            if (post['is_live'] == true && post['live_status'] == 'active')
-              Container(
-                margin: const EdgeInsets.symmetric(vertical: 8),
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.red.shade900.withOpacity(0.9),
-                      Colors.black87,
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.red.withOpacity(0.3),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                  border: Border.all(color: Colors.redAccent.withOpacity(0.5)),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.redAccent.withOpacity(0.2),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.live_tv_rounded, color: Colors.redAccent, size: 28),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.redAccent,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: const Text(
-                                  'LIVE NOW',
-                                  style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              const Text(
-                                'Interactive Broadcast',
-                                style: TextStyle(color: Colors.white70, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            post['user_data']?['name'] != null ? '${post['user_data']['name']} is Live!' : 'Broadcasting Live',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                        ],
-                      ),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.redAccent,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      ),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => LiveStreamPage(
-                              postId: postId,
-                              channelName: (post['channel_id'] ?? postId) as String,
-                              isHost: isOwner,
-                              hostUserId: (post['user_id'] ?? '') as String,
-                              hostUserData: post['user_data'] as Map<String, dynamic>?,
-                            ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 18),
-                      label: Text(
-                        isOwner ? 'Enter Live' : 'Watch Live',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
+            if ((post['is_live'] == true && post['live_status'] != 'ended') || post['live_status'] == 'active')
+              InlineLiveWidget(
+                key: ValueKey('live_$postId'),
+                postId: postId,
+                channelName: (post['channel_id'] ?? postId) as String,
+                isHost: isOwner,
+                hostUserId: (post['user_id'] ?? '') as String,
+                hostUserData: post['user_data'] as Map<String, dynamic>?,
               ),
             const SizedBox(height: 10),
             if (post['image_url']?.isNotEmpty ?? false)
