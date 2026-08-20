@@ -32,7 +32,7 @@ service cloud.firestore {
           (isOwner()
             && request.resource.data.user_id == resource.data.user_id
             && request.resource.data.timestamp == resource.data.timestamp
-            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','image_url','video_url','is_live','post_type','is_private','edited','likes_count','comments_count'])
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','image_url','video_url','is_live','live_status','channel_id','ended_at','duration_seconds','post_type','is_private','edited','likes_count','comments_count'])
           )
           ||
           // Anyone adjusts likes_count by +/-1 only
@@ -65,12 +65,10 @@ service cloud.firestore {
         allow read: if post().data.is_private == false || (signedIn() && request.auth.uid == postOwner());
         // Create by the commenting user
         allow create: if signedIn()
-                      && request.resource.data.user_id == request.auth.uid
-                      && request.resource.data.keys().hasOnly(['user_id','text','timestamp','edited']);
+                      && request.resource.data.user_id == request.auth.uid;
         // Update text by the author only
         allow update: if signedIn()
-                      && resource.data.user_id == request.auth.uid
-                      && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','edited']);
+                      && resource.data.user_id == request.auth.uid;
         // Delete by author or post owner
         allow delete: if signedIn()
                       && (resource.data.user_id == request.auth.uid || request.auth.uid == postOwner());
@@ -84,6 +82,18 @@ service cloud.firestore {
         allow create, update: if signedIn() && likeUid == request.auth.uid
                               && request.resource.data.keys().hasOnly(['reaction','timestamp']);
         allow delete: if signedIn() && likeUid == request.auth.uid;
+      }
+
+      // LIVE VIEWERS subcollection
+      match /live_viewers/{viewerUid} {
+        allow read: if signedIn();
+        allow create, update, delete: if signedIn() && viewerUid == request.auth.uid;
+      }
+
+      // LIVE REACTIONS subcollection
+      match /live_reactions/{reactionId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.user_id == request.auth.uid;
       }
     }
 

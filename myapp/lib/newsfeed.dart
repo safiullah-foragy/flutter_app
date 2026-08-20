@@ -26,6 +26,7 @@ import 'api_ai_page.dart';
 import 'job_search_page.dart';
 import 'cv_generator_page.dart';
 import 'theme_controller.dart';
+import 'live_stream_page.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -745,33 +746,69 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     }
   }
 
-  Future<void> _recordLiveVideo() async {
+  Future<void> _startLiveBroadcast() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
     try {
       if (!kIsWeb) {
-        final status = await Permission.camera.request();
-        if (!status.isGranted) {
+        final camStatus = await Permission.camera.request();
+        final micStatus = await Permission.microphone.request();
+        if (!camStatus.isGranted || !micStatus.isGranted) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Camera permission is required to record live video.')),
+              const SnackBar(content: Text('Camera and Microphone permissions are required to go live.')),
             );
           }
           return;
         }
       }
 
-      final XFile? pickedFile = await _imagePicker.pickVideo(
-        source: ImageSource.camera,
-        maxDuration: const Duration(seconds: 20),
-      );
-      if (pickedFile != null) {
-        setState(() {
-          _selectedVideo = File(pickedFile.path);
-          _selectedImage = null;
-          _isLive = true;
-        });
+      final int timestamp = DateTime.now().millisecondsSinceEpoch;
+      final text = _postController.text.trim();
+      final channelName = 'live_${user.uid}_$timestamp';
+
+      // Create Live Stream Post in Firestore
+      final docRef = await _firestore.collection('posts').add({
+        'user_id': user.uid,
+        'text': text.isNotEmpty ? text : '🔴 Started a Live Stream! Come join and chat!',
+        'image_url': '',
+        'video_url': '',
+        'is_live': true,
+        'live_status': 'active',
+        'channel_id': channelName,
+        'post_type': 'live',
+        'timestamp': timestamp,
+        'is_private': false,
+        'likes_count': 0,
+        'comments_count': 0,
+      });
+
+      _postController.clear();
+      _selectedImage = null;
+      _selectedVideo = null;
+      _isLive = false;
+
+      if (mounted) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => LiveStreamPage(
+              postId: docRef.id,
+              channelName: channelName,
+              isHost: true,
+              hostUserId: user.uid,
+              hostUserData: userData,
+            ),
+          ),
+        );
       }
     } catch (e) {
-      print('Error recording live video: $e');
+      debugPrint('Error starting live broadcast: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to start live broadcast: $e')),
+        );
+      }
     }
   }
 
@@ -1584,7 +1621,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                           const SizedBox(width: 6),
                           _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.blue, _pickVideo),
                           const SizedBox(width: 6),
-                          _buildComposerAction(Icons.fiber_manual_record_rounded, 'Live (20s)', Colors.redAccent, _recordLiveVideo),
+                          _buildComposerAction(Icons.fiber_manual_record_rounded, 'Go Live (5m)', Colors.redAccent, _startLiveBroadcast),
                           const Spacer(),
                           GestureDetector(
                             onTap: _createPost,
@@ -1973,6 +2010,101 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             ),
             const SizedBox(height: 10),
             if (post['text']?.isNotEmpty ?? false) Text(post['text']),
+            if (post['is_live'] == true && post['live_status'] == 'active')
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.red.shade900.withOpacity(0.9),
+                      Colors.black87,
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.red.withOpacity(0.3),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                  border: Border.all(color: Colors.redAccent.withOpacity(0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.live_tv_rounded, color: Colors.redAccent, size: 28),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.redAccent,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Text(
+                                  'LIVE NOW',
+                                  style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Interactive Broadcast',
+                                style: TextStyle(color: Colors.white70, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            post['user_data']?['name'] != null ? '${post['user_data']['name']} is Live!' : 'Broadcasting Live',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                        ],
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      ),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => LiveStreamPage(
+                              postId: postId,
+                              channelName: (post['channel_id'] ?? postId) as String,
+                              isHost: isOwner,
+                              hostUserId: (post['user_id'] ?? '') as String,
+                              hostUserData: post['user_data'] as Map<String, dynamic>?,
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 18),
+                      label: Text(
+                        isOwner ? 'Enter Live' : 'Watch Live',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 10),
             if (post['image_url']?.isNotEmpty ?? false)
               CachedNetworkImage(
