@@ -1611,44 +1611,46 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                         ),
                       ),
                       const SizedBox(height: 8),
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        physics: const BouncingScrollPhysics(),
-                        child: Row(
-                          children: [
-                            _buildComposerAction(Icons.photo_library_outlined, 'Photo', Colors.green, _pickImage),
-                            const SizedBox(width: 6),
-                            _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.blue, _pickVideo),
-                            const SizedBox(width: 6),
-                            _buildComposerAction(Icons.fiber_manual_record_rounded, 'Go Live (5m)', Colors.redAccent, _startLiveBroadcast),
-                            const SizedBox(width: 10),
-                            GestureDetector(
-                              onTap: _createPost,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                decoration: BoxDecoration(
-                                  gradient: ThemeController.instance.appBarGradient,
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: ThemeController.instance.primaryColor.withOpacity(0.35),
-                                      blurRadius: 6,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ],
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.send_rounded, size: 14, color: Colors.white),
-                                    SizedBox(width: 5),
-                                    Text('Post', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                                  ],
-                                ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildComposerAction(Icons.photo_library_outlined, 'Photo', Colors.green, _pickImage),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.blue, _pickVideo),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: _buildComposerAction(Icons.sensors, 'Live', Colors.redAccent, _startLiveBroadcast),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: _createPost,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                              decoration: BoxDecoration(
+                                gradient: ThemeController.instance.appBarGradient,
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: ThemeController.instance.primaryColor.withOpacity(0.35),
+                                    blurRadius: 6,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.send_rounded, size: 14, color: Colors.white),
+                                  SizedBox(width: 4),
+                                  Text('Post', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                ],
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                       if (_selectedImage != null || _selectedVideo != null)
                         Stack(
@@ -1846,16 +1848,16 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
         decoration: BoxDecoration(
           color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withOpacity(0.2)),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: color.withOpacity(0.25)),
         ),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: color, size: 16),
+            Icon(icon, color: color, size: 15),
             const SizedBox(width: 4),
             Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
           ],

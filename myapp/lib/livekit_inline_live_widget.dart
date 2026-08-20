@@ -322,7 +322,7 @@ class _LiveKitInlineLiveWidgetState extends State<LiveKitInlineLiveWidget>
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Container(
-        height: 380,
+        height: 250,
         width: double.infinity,
         color: Colors.black,
         child: Stack(

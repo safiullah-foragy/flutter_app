@@ -2,7 +2,7 @@ name: myapp
 description: Flutter Firebase Login App with Supabase Image Storage
 publish_to: "none"
 
-version: 1.0.0+2003
+version: 1.0.0+2004
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
