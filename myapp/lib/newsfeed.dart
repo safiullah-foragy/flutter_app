@@ -82,7 +82,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   Map<String, StreamSubscription<DocumentSnapshot>?> likeSubscriptions = {};
   // Live author profile updates per user id
   Map<String, StreamSubscription<DocumentSnapshot>?> authorSubscriptions = {};
-  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool isLoading = true;
   bool hasConnection = true;
   bool _showComposer = true;
@@ -98,9 +98,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   }
 
   void _checkConnectivity() {
-    _connectivitySubscription = _connectivity.onConnectivityChanged.listen((ConnectivityResult result) {
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen((List<ConnectivityResult> results) {
       setState(() {
-        hasConnection = result != ConnectivityResult.none;
+        hasConnection = results.isNotEmpty && !results.contains(ConnectivityResult.none);
       });
       if (!hasConnection) {
         Fluttertoast.showToast(msg: 'No internet connection. Showing cached data if available.');

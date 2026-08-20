@@ -61,7 +61,7 @@ class BackgroundTasks {
   /// Flush queued actions if connected.
   static Future<void> flushPending() async {
     final conn = await Connectivity().checkConnectivity();
-    if (conn == ConnectivityResult.none) return;
+    if (conn.isEmpty || conn.contains(ConnectivityResult.none)) return;
 
     final prefs = await SharedPreferences.getInstance();
     final list = prefs.getStringList(BackgroundKeys.pendingActionsKey) ?? <String>[];

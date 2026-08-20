@@ -18,7 +18,7 @@ class ConnectivityService with ChangeNotifier {
   ValueListenable<bool> get onlineListenable => _isOnline;
   bool get isOnline => _isOnline.value;
 
-  StreamSubscription<ConnectivityResult>? _sub;
+  StreamSubscription<List<ConnectivityResult>>? _sub;
   bool _initialized = false;
 
   Future<void> initialize() async {
@@ -27,12 +27,12 @@ class ConnectivityService with ChangeNotifier {
 
     // Bootstrap with current state
     final current = await Connectivity().checkConnectivity();
-    final onlineNow = current != ConnectivityResult.none;
+    final onlineNow = current.isNotEmpty && !current.contains(ConnectivityResult.none);
     _isOnline.value = onlineNow;
     await _applyNetworkState(onlineNow);
 
-    _sub = Connectivity().onConnectivityChanged.listen((result) async {
-      final online = result != ConnectivityResult.none;
+    _sub = Connectivity().onConnectivityChanged.listen((results) async {
+      final online = results.isNotEmpty && !results.contains(ConnectivityResult.none);
       if (online == _isOnline.value) return; // no change
       _isOnline.value = online;
       notifyListeners();

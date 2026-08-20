@@ -65,7 +65,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
   Map<String, AnimationController?> likeAnimationControllers = {};
   StreamSubscription<QuerySnapshot>? _postsSubscription;
   Map<String, StreamSubscription<QuerySnapshot>?> commentSubscriptions = {};
-  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool hasConnection = true;
   Map<String, TextEditingController> perPostCommentControllers = {};
   bool _didInitialLoad = false;
@@ -110,9 +110,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
   }
 
   void _checkConnectivity() {
-    _connectivitySubscription = _connectivity.onConnectivityChanged.listen((ConnectivityResult result) {
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen((List<ConnectivityResult> results) {
       setState(() {
-        hasConnection = result != ConnectivityResult.none;
+        hasConnection = results.isNotEmpty && !results.contains(ConnectivityResult.none);
       });
       if (!hasConnection) {
         Fluttertoast.showToast(msg: 'No internet connection. Showing cached data if available.');

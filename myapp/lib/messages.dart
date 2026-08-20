@@ -1199,7 +1199,7 @@ class _ChatPageState extends State<ChatPage> {
 
       // If offline on mobile/desktop, enqueue upload with a placeholder message
       final conn = await Connectivity().checkConnectivity();
-      final offline = conn == ConnectivityResult.none;
+      final offline = conn.isEmpty || conn.contains(ConnectivityResult.none);
       if (!kIsWeb && offline) {
         final uid = _auth.currentUser?.uid;
         if (uid != null) {
@@ -1275,7 +1275,7 @@ class _ChatPageState extends State<ChatPage> {
 
       // If offline on mobile/desktop, enqueue upload with a placeholder message
       final conn = await Connectivity().checkConnectivity();
-      final offline = conn == ConnectivityResult.none;
+      final offline = conn.isEmpty || conn.contains(ConnectivityResult.none);
       if (!kIsWeb && offline) {
         final uid = _auth.currentUser?.uid;
         if (uid != null) {
@@ -1387,7 +1387,7 @@ class _ChatPageState extends State<ChatPage> {
 
       // Check offline status
       final conn = await Connectivity().checkConnectivity();
-      final offline = conn == ConnectivityResult.none;
+      final offline = conn.isEmpty || conn.contains(ConnectivityResult.none);
       final uid = _auth.currentUser?.uid;
       if (!kIsWeb && offline && uid != null) {
         final msgRef = await _firestore

@@ -12,7 +12,9 @@ list(APPEND FLUTTER_PLUGIN_LIST
   firebase_auth
   firebase_core
   firebase_storage
+  flutter_webrtc
   iris_method_channel
+  livekit_client
   permission_handler_windows
   record_windows
   url_launcher_windows
