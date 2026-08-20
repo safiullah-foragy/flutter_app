@@ -28,6 +28,7 @@ import 'cv_generator_page.dart';
 import 'theme_controller.dart';
 import 'live_stream_page.dart';
 import 'inline_live_widget.dart';
+import 'livekit_inline_live_widget.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -2006,7 +2007,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             const SizedBox(height: 10),
             if (post['text']?.isNotEmpty ?? false) Text(post['text']),
             if ((post['is_live'] == true && post['live_status'] != 'ended') || post['live_status'] == 'active')
-              InlineLiveWidget(
+              LiveKitInlineLiveWidget(
                 key: ValueKey('live_$postId'),
                 postId: postId,
                 channelName: (post['channel_id'] ?? postId) as String,

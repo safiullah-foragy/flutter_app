@@ -6,9 +6,8 @@ class LiveKitConfig {
   );
 
   /// Base URL of your LiveKit Token Server deployed on Render
-  /// (or http://localhost:3000 for local testing on web/emulator)
   static const String tokenServerBaseUrl = String.fromEnvironment(
     'LIVEKIT_TOKEN_SERVER_URL',
-    defaultValue: 'https://render-agora-token-server-app.onrender.com', // Replace with your Render LiveKit URL once deployed
+    defaultValue: 'https://livekit-token-server-gh3s.onrender.com',
   );
 }
