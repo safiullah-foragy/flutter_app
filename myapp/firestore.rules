@@ -32,7 +32,7 @@ service cloud.firestore {
           (isOwner()
             && request.resource.data.user_id == resource.data.user_id
             && request.resource.data.timestamp == resource.data.timestamp
-            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','image_url','video_url','is_private','edited','likes_count','comments_count'])
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['text','image_url','video_url','is_live','post_type','is_private','edited','likes_count','comments_count'])
           )
           ||
           // Anyone adjusts likes_count by +/-1 only

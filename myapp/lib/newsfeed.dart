@@ -47,6 +47,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
   File? _selectedImage;
   File? _selectedVideo;
+  bool _isLive = false;
   Map<String, dynamic>? userData;
   List<Map<String, dynamic>> posts = [];
   Map<String, List<Map<String, dynamic>>> postComments = {};
@@ -539,11 +540,14 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       }
 
       final int timestamp = DateTime.now().millisecondsSinceEpoch;
+      final bool isLive = _isLive && _selectedVideo != null;
       DocumentReference ref = await _firestore.collection('posts').add({
         'user_id': user.uid,
         'text': _postController.text,
         'image_url': imageUrl,
         'video_url': videoUrl,
+        'is_live': isLive,
+        'post_type': isLive ? 'live' : (_selectedVideo != null ? 'video' : (_selectedImage != null ? 'photo' : 'text')),
         'timestamp': timestamp,
         'is_private': false,
         'likes_count': 0,
@@ -558,6 +562,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           'text': _postController.text,
           'image_url': imageUrl,
           'video_url': videoUrl,
+          'is_live': isLive,
+          'post_type': isLive ? 'live' : (_selectedVideo != null ? 'video' : (_selectedImage != null ? 'photo' : 'text')),
           'timestamp': timestamp,
           'is_private': false,
           'likes_count': 0,
@@ -570,6 +576,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         _postController.clear();
         _selectedImage = null;
         _selectedVideo = null;
+        _isLive = false;
       });
     } catch (e) {
       print('Error creating post: $e');
@@ -710,6 +717,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         setState(() {
           _selectedImage = File(pickedFile.path);
           _selectedVideo = null;
+          _isLive = false;
         });
       }
     } catch (e) {
@@ -727,11 +735,42 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         setState(() {
           _selectedVideo = File(pickedFile.path);
           _selectedImage = null;
+          _isLive = false;
         });
       }
     } catch (e) {
       print('Error picking video: $e');
       // Avoid toast
+    }
+  }
+
+  Future<void> _recordLiveVideo() async {
+    try {
+      if (!kIsWeb) {
+        final status = await Permission.camera.request();
+        if (!status.isGranted) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Camera permission is required to record live video.')),
+            );
+          }
+          return;
+        }
+      }
+
+      final XFile? pickedFile = await _imagePicker.pickVideo(
+        source: ImageSource.camera,
+        maxDuration: const Duration(seconds: 20),
+      );
+      if (pickedFile != null) {
+        setState(() {
+          _selectedVideo = File(pickedFile.path);
+          _selectedImage = null;
+          _isLive = true;
+        });
+      }
+    } catch (e) {
+      print('Error recording live video: $e');
     }
   }
 
@@ -1542,7 +1581,9 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                         children: [
                           _buildComposerAction(Icons.photo_library_outlined, 'Photo', Colors.green, _pickImage),
                           const SizedBox(width: 6),
-                          _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.red, _pickVideo),
+                          _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.blue, _pickVideo),
+                          const SizedBox(width: 6),
+                          _buildComposerAction(Icons.fiber_manual_record_rounded, 'Live (20s)', Colors.redAccent, _recordLiveVideo),
                           const Spacer(),
                           GestureDetector(
                             onTap: _createPost,
@@ -1572,37 +1613,97 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                         ],
                       ),
                       if (_selectedImage != null || _selectedVideo != null)
-                        Container(
-                          height: 150,
-                          margin: const EdgeInsets.only(top: 10),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              if (_selectedImage != null)
-                                Expanded(
-                                  child: Image.file(
-                                    _selectedImage!,
-                                    fit: BoxFit.cover,
+                        Stack(
+                          children: [
+                            Container(
+                              height: 160,
+                              margin: const EdgeInsets.only(top: 10),
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: _isLive ? Colors.redAccent : Colors.grey.shade300,
+                                  width: _isLive ? 2 : 1,
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(11),
+                                child: Row(
+                                  children: [
+                                    if (_selectedImage != null)
+                                      Expanded(
+                                        child: Image.file(
+                                          _selectedImage!,
+                                          fit: BoxFit.cover,
+                                        ),
+                                      ),
+                                    if (_selectedVideo != null)
+                                      Expanded(
+                                        child: Chewie(
+                                          controller: ChewieController(
+                                            videoPlayerController: VideoPlayerController.file(_selectedVideo!),
+                                            autoInitialize: true,
+                                            autoPlay: false,
+                                            looping: false,
+                                            allowMuting: true,
+                                            errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            if (_isLive)
+                              Positioned(
+                                top: 18,
+                                left: 8,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.redAccent,
+                                    borderRadius: BorderRadius.circular(12),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.redAccent.withOpacity(0.4),
+                                        blurRadius: 6,
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.fiber_manual_record, color: Colors.white, size: 10),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'LIVE (Max 20s)',
+                                        style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              if (_selectedVideo != null)
-                                Expanded(
-                                  child: Chewie(
-                                    controller: ChewieController(
-                                      videoPlayerController: VideoPlayerController.file(_selectedVideo!),
-                                      autoInitialize: true,
-                                      autoPlay: false,
-                                      looping: false,
-                                      allowMuting: true,
-                                      errorBuilder: (context, errorMessage) => Center(child: Text('Video error: $errorMessage')),
-                                    ),
+                              ),
+                            Positioned(
+                              top: 16,
+                              right: 6,
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    _selectedImage = null;
+                                    _selectedVideo = null;
+                                    _isLive = false;
+                                  });
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(5),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.black54,
+                                    shape: BoxShape.circle,
                                   ),
+                                  child: const Icon(Icons.close, color: Colors.white, size: 16),
                                 ),
-                            ],
-                          ),
+                              ),
+                            ),
+                          ],
                         ),
                     ],
                   ),
@@ -1776,9 +1877,46 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            post['user_data']?['name'] ?? 'Unknown User',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          Row(
+                            children: [
+                              Text(
+                                post['user_data']?['name'] ?? 'Unknown User',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              if (post['is_live'] == true || post['post_type'] == 'live') ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                  decoration: BoxDecoration(
+                                    color: Colors.redAccent,
+                                    borderRadius: BorderRadius.circular(10),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.redAccent.withOpacity(0.35),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 1),
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
+                                      SizedBox(width: 3),
+                                      Text(
+                                        'LIVE',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                           Row(
                             children: [
