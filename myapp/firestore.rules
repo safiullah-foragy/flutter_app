@@ -18,7 +18,7 @@ service cloud.firestore {
       function isOwner() { return signedIn() && resource.data.user_id == request.auth.uid; }
 
       // Read public posts, or the owner's own posts
-      allow read: if resource.data.is_private == false || (signedIn() && resource.data.user_id == request.auth.uid);
+      allow read: if !('is_private' in resource.data) || resource.data.is_private == false || (signedIn() && resource.data.user_id == request.auth.uid);
 
       // Create: only the owner can create with their uid
       allow create: if signedIn()

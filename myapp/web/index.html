@@ -36,6 +36,19 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script>
+    // Clean up any old corrupted Firestore IndexedDB cache from prior sessions
+    if (window.indexedDB && indexedDB.databases) {
+      indexedDB.databases().then(function(dbs) {
+        dbs.forEach(function(db) {
+          if (db.name && db.name.indexOf('firestore') !== -1) {
+            console.log('Clearing corrupt Firestore IndexedDB:', db.name);
+            indexedDB.deleteDatabase(db.name);
+          }
+        });
+      }).catch(function(e) {});
+    }
+  </script>
   <script src="flutter_bootstrap.js" async></script>
   
   <!-- Agora Web SDK must load before Flutter needs it -->

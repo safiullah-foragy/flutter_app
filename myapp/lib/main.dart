@@ -77,12 +77,13 @@ void main() {
 
     if (kIsWeb) {
       try {
-        FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
-      } catch (_) {
-        try {
-          FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: false);
-        } catch (_) {}
-      }
+        await FirebaseFirestore.instance.clearPersistence();
+      } catch (_) {}
+      try {
+        FirebaseFirestore.instance.settings = const Settings(
+          persistenceEnabled: false,
+        );
+      } catch (_) {}
     }
 
     // Initialize Supabase

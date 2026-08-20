@@ -3,6 +3,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'messages.dart' show ChatPage; // to navigate into the conversation
 import 'app_cache_manager.dart';
 
@@ -56,7 +57,7 @@ class _GlobalNewMessageBubbleState extends State<GlobalNewMessageBubble> with Wi
     _sub = _firestore
         .collection('conversations')
         .where('participants', arrayContains: uid)
-        .snapshots(includeMetadataChanges: true)
+        .snapshots(includeMetadataChanges: !kIsWeb)
         .listen((snap) async {
       String? bestConvId;
       String? bestOtherId;

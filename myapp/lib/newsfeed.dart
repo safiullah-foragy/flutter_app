@@ -369,8 +369,8 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
         .where('is_private', isEqualTo: false)
         .orderBy('timestamp', descending: true);
 
-    // Use includeMetadataChanges so cache-only updates still trigger rebuilds
-  _postsSubscription = baseQuery.snapshots(includeMetadataChanges: true).listen((snapshot) async {
+    // Use includeMetadataChanges so cache-only updates still trigger rebuilds on mobile
+    _postsSubscription = baseQuery.snapshots(includeMetadataChanges: !kIsWeb).listen((snapshot) async {
       // Do not block on connectivity; let cache drive UI when offline
       List<Map<String, dynamic>> postsList = [];
       for (var doc in snapshot.docs) {
@@ -428,7 +428,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       _postsSubscription = _firestore
           .collection('posts')
           .where('is_private', isEqualTo: false)
-          .snapshots(includeMetadataChanges: true)
+          .snapshots(includeMetadataChanges: !kIsWeb)
           .listen((snapshot) async {
         List<Map<String, dynamic>> postsList = [];
         for (var doc in snapshot.docs) {
@@ -529,10 +529,12 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       String videoUrl = '';
 
       if (_selectedImage != null) {
-        final status = await Permission.photos.status;
-        if (!status.isGranted) {
-          await _requestPermissions(Permission.photos);
-          if (!await Permission.photos.isGranted) return;
+        if (!kIsWeb) {
+          final status = await Permission.photos.status;
+          if (!status.isGranted) {
+            await _requestPermissions(Permission.photos);
+            if (!await Permission.photos.isGranted) return;
+          }
         }
         final String fileName = 'post_${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
         imageUrl = await sb.uploadPostImage(_selectedImage!, fileName: fileName);
@@ -707,10 +709,12 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
   Future<void> _pickImage() async {
     try {
-      final status = await Permission.photos.status;
-      if (!status.isGranted) {
-        await _requestPermissions(Permission.photos);
-        if (!await Permission.photos.isGranted) return;
+      if (!kIsWeb) {
+        final status = await Permission.photos.status;
+        if (!status.isGranted) {
+          await _requestPermissions(Permission.photos);
+          if (!await Permission.photos.isGranted) return;
+        }
       }
 
       final XFile? pickedFile = await _imagePicker.pickImage(
@@ -1362,7 +1366,7 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                   : _firestore
                       .collection('conversations')
                       .where('participants', arrayContains: _auth.currentUser?.uid ?? '')
-                      .snapshots(includeMetadataChanges: true),
+                      .snapshots(includeMetadataChanges: !kIsWeb),
               builder: (context, snap) {
                 int unreadConversations = 0;
                 if (snap.hasData) {
@@ -1892,98 +1896,100 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                GestureDetector(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => SeeProfileFromNewsfeed(userId: post['user_id']),
-                      ),
-                    );
-                  },
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 20,
-                        backgroundColor: Colors.grey[300],
-                        backgroundImage: post['user_data']?['profile_image'] != null
-                            ? CachedNetworkImageProvider(post['user_data']['profile_image'])
-                            : null,
-                        child: post['user_data']?['profile_image'] == null
-                            ? const Icon(Icons.person, size: 20, color: Colors.grey)
-                            : null,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    post['user_data']?['name'] ?? 'Unknown User',
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                if (post['is_live'] == true || post['post_type'] == 'live') ...[
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                                    decoration: BoxDecoration(
-                                      color: Colors.redAccent,
-                                      borderRadius: BorderRadius.circular(10),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.redAccent.withOpacity(0.35),
-                                          blurRadius: 4,
-                                          offset: const Offset(0, 1),
-                                        ),
-                                      ],
-                                    ),
-                                    child: const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
-                                        SizedBox(width: 3),
-                                        Text(
-                                          'LIVE',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.bold,
-                                            letterSpacing: 0.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                            Row(
-                              children: [
-                                Text(
-                                  DateFormat('MMM dd, yyyy - HH:mm').format(
-                                    DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
-                                  ),
-                                  style: const TextStyle(color: Colors.grey, fontSize: 12),
-                                ),
-                                if (isOwner) ...[
-                                  const SizedBox(width: 8),
-                                  Icon(
-                                    isPrivate ? Icons.lock : Icons.public,
-                                    size: 14,
-                                    color: Colors.grey,
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ],
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => SeeProfileFromNewsfeed(userId: post['user_id']),
                         ),
-                      ),
-                    ],
+                      );
+                    },
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Colors.grey[300],
+                          backgroundImage: post['user_data']?['profile_image'] != null
+                              ? CachedNetworkImageProvider(post['user_data']['profile_image'])
+                              : null,
+                          child: post['user_data']?['profile_image'] == null
+                              ? const Icon(Icons.person, size: 20, color: Colors.grey)
+                              : null,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      post['user_data']?['name'] ?? 'Unknown User',
+                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (post['is_live'] == true || post['post_type'] == 'live') ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: Colors.redAccent,
+                                        borderRadius: BorderRadius.circular(10),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.redAccent.withOpacity(0.35),
+                                            blurRadius: 4,
+                                            offset: const Offset(0, 1),
+                                          ),
+                                        ],
+                                      ),
+                                      child: const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.fiber_manual_record, color: Colors.white, size: 8),
+                                          SizedBox(width: 3),
+                                          Text(
+                                            'LIVE',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  Text(
+                                    DateFormat('MMM dd, yyyy - HH:mm').format(
+                                      DateTime.fromMillisecondsSinceEpoch(post['timestamp'] ?? 0),
+                                    ),
+                                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                                  ),
+                                  if (isOwner) ...[
+                                    const SizedBox(width: 8),
+                                    Icon(
+                                      isPrivate ? Icons.lock : Icons.public,
+                                      size: 14,
+                                      color: Colors.grey,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 if (isOwner)
@@ -2024,6 +2030,14 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                 isHost: isOwner,
                 hostUserId: (post['user_id'] ?? '') as String,
                 hostUserData: post['user_data'] as Map<String, dynamic>?,
+                onLiveEnded: () {
+                  if (mounted) {
+                    setState(() {
+                      post['is_live'] = false;
+                      post['live_status'] = 'ended';
+                    });
+                  }
+                },
               ),
             const SizedBox(height: 10),
             if (post['image_url']?.isNotEmpty ?? false)

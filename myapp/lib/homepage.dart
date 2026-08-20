@@ -413,7 +413,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
           .collection('posts')
           .where('user_id', isEqualTo: user.uid)
           .orderBy('timestamp', descending: true)
-          .snapshots(includeMetadataChanges: true)
+          .snapshots(includeMetadataChanges: !kIsWeb)
           .listen((snapshot) async {
         await process(snapshot);
       }, onError: (e) async {
@@ -423,7 +423,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
         _postsSubscription = _firestore
             .collection('posts')
             .where('user_id', isEqualTo: user.uid)
-            .snapshots(includeMetadataChanges: true)
+            .snapshots(includeMetadataChanges: !kIsWeb)
             .listen((snapshot) async {
           await process(snapshot);
         }, onError: (err) => print('Unordered posts listener error: $err'));
@@ -434,7 +434,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
       _postsSubscription = _firestore
           .collection('posts')
           .where('user_id', isEqualTo: user.uid)
-          .snapshots(includeMetadataChanges: true)
+          .snapshots(includeMetadataChanges: !kIsWeb)
           .listen((snapshot) async {
         await process(snapshot);
       }, onError: (err) => print('Unordered posts listener error: $err'));
@@ -1877,6 +1877,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                 isHost: _auth.currentUser?.uid == post['user_id'],
                 hostUserId: (post['user_id'] ?? '') as String,
                 hostUserData: userData,
+                onLiveEnded: () {
+                  if (mounted) {
+                    setState(() {
+                      post['is_live'] = false;
+                      post['live_status'] = 'ended';
+                    });
+                  }
+                },
               ),
             const SizedBox(height: 10),
             if (post['image_url']?.isNotEmpty ?? false)

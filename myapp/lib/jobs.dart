@@ -487,14 +487,14 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
               ],
             ),
             const SizedBox(height: 4),
-            StreamBuilder<QuerySnapshot>(
+              StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
                   .collection('posts')
                   .doc(postId)
                   .collection('comments')
                   .orderBy('timestamp', descending: false)
                   .limit(5)
-                  .snapshots(includeMetadataChanges: true),
+                  .snapshots(includeMetadataChanges: !kIsWeb),
               builder: (c, snap) {
                 if (!snap.hasData) return const SizedBox.shrink();
                 final docs = snap.data!.docs;
@@ -552,7 +552,7 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
           .collection('posts')
           .where('post_type', isEqualTo: 'job')
           .where('is_private', isEqualTo: false)
-          .snapshots(includeMetadataChanges: true),
+          .snapshots(includeMetadataChanges: !kIsWeb),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));
@@ -587,7 +587,7 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
           .collection('posts')
           .where('post_type', isEqualTo: 'job')
           .where('user_id', isEqualTo: uid)
-          .snapshots(includeMetadataChanges: true),
+          .snapshots(includeMetadataChanges: !kIsWeb),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));

@@ -37,7 +37,7 @@ class ReelsPage extends StatelessWidget {
     stream: _firestore
       .collection('posts')
       .where('is_private', isEqualTo: false)
-      .snapshots(includeMetadataChanges: true),
+      .snapshots(includeMetadataChanges: !kIsWeb),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));

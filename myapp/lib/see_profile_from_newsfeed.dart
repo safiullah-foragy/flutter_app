@@ -64,6 +64,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
         followers = data?['followers_count'] ?? 0;
         following = data?['following_count'] ?? 0;
 
+        if (!mounted) return;
         setState(() {
           userData = data;
           postsCount = posts;
@@ -72,6 +73,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
           isLoading = false;
         });
       } else {
+        if (!mounted) return;
         Fluttertoast.showToast(msg: 'User not found');
         setState(() {
           isLoading = false;
@@ -79,6 +81,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
       }
     } catch (e) {
       print('Error fetching user data: $e');
+      if (!mounted) return;
       Fluttertoast.showToast(msg: 'Failed to load user data');
       setState(() {
         isLoading = false;
@@ -89,8 +92,8 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
   void _setupUserListener() {
     _userSub?.cancel();
     _userSub = _firestore.collection('users').doc(widget.userId).snapshots().listen((doc) {
-      if (!doc.exists) return;
-  final data = doc.data();
+      if (!doc.exists || !mounted) return;
+      final data = doc.data();
       if (data == null) return;
       setState(() {
         userData = data;
@@ -110,6 +113,7 @@ class _SeeProfileFromNewsfeedState extends State<SeeProfileFromNewsfeed> {
         .where('user_id', isEqualTo: widget.userId)
         .snapshots()
         .listen((snap) {
+      if (!mounted) return;
       setState(() {
         postsCount = snap.docs.length;
       });
