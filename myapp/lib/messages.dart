@@ -307,8 +307,6 @@ class _MessagesPageState extends State<MessagesPage> {
           );
 
           // Page-scoped bubble overlay removed (we show a global overlay instead).
-          // Setup listeners for incoming call invites.
-          _setupIncomingCallListeners(convs.map((c) => (c['doc'] as QueryDocumentSnapshot).id).toList());
           return listView;
         },
       ),
@@ -320,62 +318,6 @@ class _MessagesPageState extends State<MessagesPage> {
     for (final s in _callSubs.values) { s.cancel(); }
     _callSubs.clear();
     super.dispose();
-  }
-
-  void _setupIncomingCallListeners(List<String> conversationIds) {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) return;
-    // Remove obsolete listeners
-    final obsolete = _callSubs.keys.where((id) => !conversationIds.contains(id)).toList();
-    for (final id in obsolete) { _callSubs[id]?.cancel(); _callSubs.remove(id); }
-    // Add new listeners
-    for (final convId in conversationIds) {
-      if (_callSubs.containsKey(convId)) continue;
-      final sub = _firestore.collection('conversations').doc(convId).collection('messages')
-          .orderBy('timestamp', descending: true).limit(1).snapshots().listen((snap) {
-        if (snap.docs.isEmpty) return;
-        final data = snap.docs.first.data() as Map<String, dynamic>? ?? {};
-        final sender = data['sender_id'];
-        final fileType = data['file_type'];
-        final callChannel = data['call_channel'];
-        final ts = (data['timestamp'] ?? 0) as int;
-        final recent = DateTime.now().millisecondsSinceEpoch - ts < 60000; // last 60s
-        if (sender != null && sender != uid && (fileType == 'call_audio' || fileType == 'call_video') && callChannel is String && callChannel.isNotEmpty && recent) {
-          _showIncomingCall(convId: convId, fromUserId: sender, channel: callChannel, video: fileType == 'call_video');
-        }
-      });
-      _callSubs[convId] = sub;
-    }
-  }
-
-  void _showIncomingCall({required String convId, required String fromUserId, required String channel, required bool video}) async {
-    if (!mounted || _showingIncoming) return;
-    _showingIncoming = true;
-    
-    // Check if this is a group call
-    bool isGroupCall = false;
-    try {
-      final convDoc = await _firestore.collection('conversations').doc(convId).get();
-      if (convDoc.exists) {
-        final convData = convDoc.data();
-        isGroupCall = convData?['is_group'] == true;
-      }
-    } catch (e) {
-      debugPrint('Error checking if group call: $e');
-    }
-    
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => IncomingCallDialog(
-        conversationId: convId,
-        fromUserId: fromUserId,
-        channelName: channel,
-        video: video,
-        isGroupCall: isGroupCall,
-        onFinished: () { _showingIncoming = false; },
-      ),
-    );
   }
 
   Widget _buildUserAvatar(String? avatarUrl, String userId) {
@@ -1121,23 +1063,28 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _startCall({required bool audioOnly}) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
-    final channel = 'conv_${widget.conversationId}';
     final otherId = widget.otherUserId;
+    if (otherId.isEmpty) return;
 
-    // Create /call_sessions doc for global signaling so callee gets full-screen dialog even outside MessagesPage.
-    String? sessionId;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final sessionRef = FirebaseFirestore.instance.collection('call_sessions').doc();
+    final sessionId = sessionRef.id;
+    final channel = 'call_${widget.conversationId}_$now';
+
+    // Create /call_sessions doc for global signaling
     try {
-      final ref = await FirebaseFirestore.instance.collection('call_sessions').add({
+      await sessionRef.set({
+        'id': sessionId,
         'channel': channel,
         'caller_id': uid,
         'callee_id': otherId,
         'video': !audioOnly,
         'status': 'ringing',
-        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'timestamp': now,
+        'created_at': now,
         'accepted_at': null,
         'ended_at': null,
       });
-      sessionId = ref.id;
     } catch (e) {
       debugPrint('Failed to create call session: $e');
     }
@@ -1151,16 +1098,17 @@ class _ChatPageState extends State<ChatPage> {
           .add({
         'sender_id': uid,
         'text': audioOnly ? 'Started an audio call' : 'Started a video call',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'timestamp': now,
         'file_url': '',
         'file_type': audioOnly ? 'call_audio' : 'call_video',
         'call_channel': channel,
+        'call_session_id': sessionId,
         'reactions': <String, dynamic>{},
         'edited': false,
       });
       await _firestore.collection('conversations').doc(widget.conversationId).update({
         'last_message': audioOnly ? '[Audio call]' : '[Video call]',
-        'last_updated': DateTime.now().millisecondsSinceEpoch,
+        'last_updated': now,
       });
     } catch (e) {
       debugPrint('Error sending call invite: $e');
@@ -1168,15 +1116,22 @@ class _ChatPageState extends State<ChatPage> {
       if (e is FirebaseException) {
         userMsg = 'Failed to send call invite: ${e.code} - ${e.message}';
       }
-      // Surface permission errors to the user so they understand why receiver didn't get the invite
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(userMsg)));
       }
     }
 
     if (!mounted) return;
-    // Even if sending the Firestore invite failed (permissions or network), open the local call UI so the caller can start/join.
-    Navigator.push(context, CallPage.route(channelName: channel, video: !audioOnly, callSessionId: sessionId));
+    Navigator.push(
+      context,
+      CallPage.route(
+        channelName: channel,
+        video: !audioOnly,
+        conversationId: widget.conversationId,
+        remoteUserId: otherId,
+        callSessionId: sessionId,
+      ),
+    );
   }
 
   Future<void> _sendMessage({String? text, String? fileUrl, String? fileType}) async {
@@ -2178,12 +2133,14 @@ class _ChatPageState extends State<ChatPage> {
     // Create call session for tracking
     String? sessionId;
     try {
+      final now = DateTime.now().millisecondsSinceEpoch;
       final ref = await FirebaseFirestore.instance.collection('call_sessions').add({
         'channel': channel,
         'caller_id': uid,
         'video': !audioOnly,
         'status': 'ringing',
-        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'timestamp': now,
+        'created_at': now,
         'is_group': true,
         'group_id': widget.conversationId,
       });
@@ -2603,15 +2560,38 @@ class _ChatPageState extends State<ChatPage> {
                                                     backgroundColor: isMe ? Colors.white : Colors.blue,
                                                     foregroundColor: isMe ? Colors.blue : Colors.white,
                                                   ),
-                                                  onPressed: () {
+                                                  onPressed: () async {
                                                     final channel = callChannel is String && callChannel.isNotEmpty
                                                         ? callChannel
                                                         : 'conv_${widget.conversationId}';
+                                                    String? matchedSessionId;
+                                                    try {
+                                                      final snap = await _firestore
+                                                          .collection('call_sessions')
+                                                          .where('channel', isEqualTo: channel)
+                                                          .where('status', isEqualTo: 'ringing')
+                                                          .limit(1)
+                                                          .get();
+                                                      if (snap.docs.isNotEmpty) {
+                                                        matchedSessionId = snap.docs.first.id;
+                                                        if (!isMe) {
+                                                          await snap.docs.first.reference.update({
+                                                            'status': 'accepted',
+                                                            'accepted_at': DateTime.now().millisecondsSinceEpoch,
+                                                          });
+                                                        }
+                                                      }
+                                                    } catch (_) {}
+                                                    if (!context.mounted) return;
                                                     Navigator.push(
                                                       context,
                                                       CallPage.route(
                                                         channelName: channel,
                                                         video: fileType == 'call_video',
+                                                        conversationId: widget.conversationId,
+                                                        remoteUserId: isMe ? widget.otherUserId : senderId,
+                                                        callSessionId: matchedSessionId,
+                                                        isGroupCall: widget.isGroup,
                                                       ),
                                                     );
                                                   },
@@ -3233,6 +3213,7 @@ class _IncomingCallDialogState extends State<IncomingCallDialog> {
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                   onPressed: () async {
                     // Find and update the call_session status to 'accepted'
+                    String? sessionId;
                     try {
                       final callSessions = await _firestore
                           .collection('call_sessions')
@@ -3243,6 +3224,7 @@ class _IncomingCallDialogState extends State<IncomingCallDialog> {
                       
                       if (callSessions.docs.isNotEmpty) {
                         final sessionDoc = callSessions.docs.first;
+                        sessionId = sessionDoc.id;
                         await sessionDoc.reference.update({
                           'status': 'accepted',
                           'accepted_at': DateTime.now().millisecondsSinceEpoch,
@@ -3262,6 +3244,7 @@ class _IncomingCallDialogState extends State<IncomingCallDialog> {
                       video: widget.video, 
                       conversationId: widget.conversationId, 
                       remoteUserId: widget.fromUserId,
+                      callSessionId: sessionId,
                       isGroupCall: widget.isGroupCall,
                     ));
                   },

@@ -1,19 +1,16 @@
 import 'dart:math';
 import 'dart:async';
-import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart';
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'agora_config.dart';
 import 'agora_token_service.dart';
 import 'agora_web_client.dart' if (dart.library.io) 'agora_web_client_stub.dart';
+import 'notification_service.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:audioplayers/audioplayers.dart';
 
 class CallPage extends StatefulWidget {
   final String channelName; // e.g., conv_<conversationId>
@@ -21,17 +18,46 @@ class CallPage extends StatefulWidget {
   final String? conversationId; // extracted from channelName or passed explicitly
   final String? remoteUserId; // for displaying avatar/name
   final bool isGroupCall; // true if this is a group call
-  const CallPage({super.key, required this.channelName, required this.video, this.conversationId, this.remoteUserId, this.callSessionId, this.isGroupCall = false});
   final String? callSessionId; // Firestore call_session document id for status tracking
+  final bool isCaller; // true = caller (starts in Calling/Ringing phase), false = receiver (direct talking screen)
 
-      static Route route({required String channelName, required bool video, String? conversationId, String? remoteUserId, String? callSessionId, bool isGroupCall = false}) =>
-        MaterialPageRoute(builder: (_) => CallPage(channelName: channelName, video: video, conversationId: conversationId, remoteUserId: remoteUserId, callSessionId: callSessionId, isGroupCall: isGroupCall));
+  const CallPage({
+    super.key,
+    required this.channelName,
+    required this.video,
+    this.conversationId,
+    this.remoteUserId,
+    this.callSessionId,
+    this.isGroupCall = false,
+    this.isCaller = true,
+  });
+
+  static Route route({
+    required String channelName,
+    required bool video,
+    String? conversationId,
+    String? remoteUserId,
+    String? callSessionId,
+    bool isGroupCall = false,
+    bool isCaller = true,
+  }) =>
+      MaterialPageRoute(
+        builder: (_) => CallPage(
+          channelName: channelName,
+          video: video,
+          conversationId: conversationId,
+          remoteUserId: remoteUserId,
+          callSessionId: callSessionId,
+          isGroupCall: isGroupCall,
+          isCaller: isCaller,
+        ),
+      );
 
   @override
   State<CallPage> createState() => _CallPageState();
 }
 
-class _CallPageState extends State<CallPage> {
+class _CallPageState extends State<CallPage> with SingleTickerProviderStateMixin {
   RtcEngine? _engine;
   AgoraWebClient? _webClient; // For web platform
   String? _token;
@@ -41,68 +67,114 @@ class _CallPageState extends State<CallPage> {
   bool _muted = false;
   bool _speakerOn = true;
   bool _frontCamera = true;
-  bool _videoEnabled = true; // Track if video is enabled
+  bool _videoEnabled = true;
   bool _engineInitialized = false;
+
+  // Call status: 'calling' (waiting for receiver), 'connected' (talking), or terminal ('ended', 'rejected', 'cancelled')
+  bool _isCallConnected = false;
   DateTime? _callStart;
   Duration _elapsed = Duration.zero;
   Timer? _timer;
+  Timer? _ringingTimeoutTimer;
+
   Map<String, dynamic>? _remoteUserData; // name, profile_image
   StreamSubscription<DocumentSnapshot>? _callSessionSub;
-  String? _terminalReason; // 'rejected','ended','missed'
-  Timer? _outgoingToneTimer;
-  AudioPlayer? _outgoingPlayer;
-  bool _outgoingPlayerActive = false;
-  bool _outgoingToneStarted = false;
+  String? _terminalReason;
+  String? _currentSessionStatus;
   bool _isCaller = true;
-  bool _isJoining = false; // Track if currently joining to prevent duplicate joins
-  bool _shouldJoinAfterInit = false; // Track if we need to join after engine initialization completes
+  bool _isJoining = false;
+  bool _shouldJoinAfterInit = false;
+
+  // Pulse animation for the calling screen
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
   // Video layout state
-  Offset? _pipOffset; // position of PiP window
-  bool _showLocalFull = false; // when true, show local full-screen and remote as PiP
-  double _zoomLevel = 1.0; // Zoom level for video (1.0 = no zoom, 2.0 = 2x zoom)
-  Offset _zoomOffset = Offset.zero; // Pan offset when zoomed
-  bool _zoomEnabled = false; // Web: require click to enable zoom
+  Offset? _pipOffset;
+  bool _showLocalFull = false;
 
   @override
   void initState() {
     super.initState();
+    _isCaller = widget.isCaller;
+    if (!_isCaller) {
+      _onCallConnected();
+      _shouldJoinAfterInit = true;
+      final sessId = widget.callSessionId;
+      if (sessId != null && sessId.isNotEmpty) {
+        try {
+          FirebaseFirestore.instance.collection('call_sessions').doc(sessId).set({
+            'status': 'accepted',
+            'accepted_at': DateTime.now().millisecondsSinceEpoch,
+          }, SetOptions(merge: true));
+        } catch (_) {}
+      }
+    }
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.12).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
     _init();
     _attachCallSessionListener();
   }
 
   Future<void> _init() async {
-    // Validate channel name early to avoid bad token requests
     if (widget.channelName.trim().isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Call channel is empty. Please retry call.'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Call channel is empty. Please retry call.')),
+        );
       }
       return;
     }
 
-    // Attempt to derive conversation ID if not provided (channel pattern conv_<id>)
-    final convId = widget.conversationId ?? (widget.channelName.startsWith('conv_') ? widget.channelName.substring(5) : null);
-    if (convId != null && widget.remoteUserId != null) {
-      // Fetch remote user profile for avatar/name
+    // Fetch remote user profile for avatar/name
+    final targetUid = widget.remoteUserId;
+    if (targetUid != null && targetUid.isNotEmpty) {
       try {
-        final doc = await FirebaseFirestore.instance.collection('users').doc(widget.remoteUserId!).get();
-        if (doc.exists) _remoteUserData = doc.data();
+        final doc = await FirebaseFirestore.instance.collection('users').doc(targetUid).get();
+        if (doc.exists && mounted) {
+          setState(() {
+            _remoteUserData = doc.data();
+          });
+        }
+      } catch (_) {}
+    } else if (widget.conversationId != null) {
+      try {
+        final currentUid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+        final convDoc = await FirebaseFirestore.instance.collection('conversations').doc(widget.conversationId).get();
+        if (convDoc.exists) {
+          final parts = List<String>.from(convDoc.data()?['participants'] ?? []);
+          final otherUid = parts.firstWhere((p) => p != currentUid, orElse: () => '');
+          if (otherUid.isNotEmpty) {
+            final uDoc = await FirebaseFirestore.instance.collection('users').doc(otherUid).get();
+            if (uDoc.exists && mounted) {
+              setState(() {
+                _remoteUserData = uDoc.data();
+              });
+            }
+          }
+        }
       } catch (_) {}
     }
+
     if (AgoraConfig.appId == 'YOUR_AGORA_APP_ID_HERE' || AgoraConfig.appId.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Please set AGORA_APP_ID (agora_config.dart or --dart-define).'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please set AGORA_APP_ID in agora_config.dart.')),
+        );
       }
       return;
     }
 
-    // Pick a random UID per session to avoid collisions
     _localUid = Random().nextInt(0x7FFFFFFF);
 
-    // Branch: Web vs Native initialization
     if (kIsWeb) {
       await _initWeb();
     } else {
@@ -116,19 +188,24 @@ class _CallPageState extends State<CallPage> {
       debugPrint('AgoraWeb: Initializing web client');
       _webClient = AgoraWebClient();
       await _webClient!.initialize(AgoraConfig.appId);
-      
-      // Listen to user joined/left events
+
       _webClient!.onUserJoined.listen((remoteUid) {
         debugPrint('AgoraWeb: Remote user joined - uid: $remoteUid');
-        setState(() {
-          _remoteUids.add(remoteUid);
-        });
-        _startElapsedTimer();
+        if (mounted) {
+          setState(() {
+            _remoteUids.add(remoteUid);
+          });
+          if (widget.isGroupCall || _currentSessionStatus == 'accepted') {
+            _onCallConnected();
+          }
+        }
       });
 
       _webClient!.onUserLeft.listen((remoteUid) {
         debugPrint('AgoraWeb: Remote user left - uid: $remoteUid');
-        setState(() => _remoteUids.remove(remoteUid));
+        if (mounted) {
+          setState(() => _remoteUids.remove(remoteUid));
+        }
       });
 
       _engineInitialized = true;
@@ -136,226 +213,223 @@ class _CallPageState extends State<CallPage> {
     } catch (e) {
       debugPrint('AgoraWeb: Initialization error - $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Failed to initialize Agora Web: $e'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to initialize Agora Web: $e')),
+        );
       }
       return;
     }
 
-    // Get token
     try {
-      debugPrint('AgoraWeb: Fetching token for channel: ${widget.channelName}, uid: $_localUid');
       _token = await AgoraTokenService.fetchRtcToken(channelName: widget.channelName, uid: _localUid);
-      debugPrint('AgoraWeb: Token fetched successfully');
     } catch (e) {
       debugPrint('AgoraWeb: Token fetch FAILED: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to fetch token: $e')));
-      }
-      return;
     }
 
-    // Don't join channel yet - wait for call acceptance
-    debugPrint('AgoraWeb: Initialization complete, waiting for call acceptance');
-    
-    // If we received 'accepted' before initialization, join now
     if (_shouldJoinAfterInit && !_joined && !_isJoining) {
-      debugPrint('AgoraWeb: Performing deferred join after initialization...');
       _shouldJoinAfterInit = false;
+      await _joinChannel();
+    } else if (_isCaller && !_joined && !_isJoining) {
       await _joinChannel();
     }
   }
 
   /// Initialize Agora for Native platforms (Android/iOS)
   Future<void> _initNative() async {
-    // Ask for mic/camera permissions
-    final micStatus = await Permission.microphone.request();
-    if (!micStatus.isGranted) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Microphone permission denied')));
-      }
-      return;
-    }
-    if (widget.video) {
-      final camStatus = await Permission.camera.request();
-      if (!camStatus.isGranted) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Camera permission denied')));
-        }
+    try {
+      final micStatus = await Permission.microphone.request();
+      if (!micStatus.isGranted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Microphone permission is required for calls')),
+        );
         return;
       }
-    }
+      if (widget.video) {
+        final camStatus = await Permission.camera.request();
+        if (!camStatus.isGranted && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Camera permission is required for video calls')),
+          );
+          return;
+        }
+      }
+    } catch (_) {}
 
     try {
-      // Create engine
       _engine = createAgoraRtcEngine();
-      await _engine!.initialize(RtcEngineContext(
-        appId: AgoraConfig.appId,
-        channelProfile: ChannelProfileType.channelProfileCommunication,
-      ));
-      debugPrint('Agora: Engine initialized successfully');
-
-      // Basic event handlers
-      if (_engine != null) {
-        _engine!.registerEventHandler(RtcEngineEventHandler(
-      onJoinChannelSuccess: (RtcConnection conn, int elapsed) async {
-        debugPrint('Agora: Join channel SUCCESS - channel: ${conn.channelId}, localUid: ${conn.localUid}');
-        setState(() => _joined = true);
-        _isJoining = false;
-        await _syncCallStartTime();
-        _startCallForeground();
-      },
-      onUserJoined: (RtcConnection conn, int remoteUid, int elapsed) {
-        debugPrint('Agora: Remote user JOINED - uid: $remoteUid');
-        setState(() => _remoteUids.add(remoteUid));
-      },
-      onUserOffline: (RtcConnection conn, int remoteUid, UserOfflineReasonType reason) {
-        debugPrint('Agora: Remote user OFFLINE - uid: $remoteUid, reason: $reason');
-        setState(() => _remoteUids.remove(remoteUid));
-      },
-      onTokenPrivilegeWillExpire: (RtcConnection conn, String token) async {
-        debugPrint('Agora: Token will expire, renewing...');
-        try {
-          final newToken = await AgoraTokenService.fetchRtcToken(channelName: widget.channelName, uid: _localUid);
-          if (_engine != null) await _engine!.renewToken(newToken);
-        } catch (_) {}
-      },
-      onError: (ErrorCodeType err, String msg) {
-        debugPrint('Agora ERROR: $err - $msg');
-      },
-    ));
+      try {
+        await _engine!.initialize(RtcEngineContext(
+          appId: AgoraConfig.appId,
+          channelProfile: ChannelProfileType.channelProfileCommunication,
+        ));
+      } catch (initErr) {
+        debugPrint('Agora initial initialize failed ($initErr), releasing and retrying...');
+        try { await _engine!.leaveChannel(); } catch (_) {}
+        try { await _engine!.release(); } catch (_) {}
+        _engine = createAgoraRtcEngine();
+        await _engine!.initialize(RtcEngineContext(
+          appId: AgoraConfig.appId,
+          channelProfile: ChannelProfileType.channelProfileCommunication,
+        ));
       }
 
-      if (_engine != null) {
-        if (widget.video) {
-          await _engine!.enableVideo();
-          try { await _engine!.startPreview(); } catch (_) {}
-        } else {
-          await _engine!.disableVideo();
-          await _engine!.enableAudio();
-        }
+      _engine!.registerEventHandler(RtcEngineEventHandler(
+        onJoinChannelSuccess: (RtcConnection conn, int elapsed) {
+          debugPrint('Agora: Join channel SUCCESS - channel: ${conn.channelId}, localUid: ${conn.localUid}');
+          if (mounted) {
+            setState(() => _joined = true);
+          }
+          _isJoining = false;
+          try { _engine?.setEnableSpeakerphone(_speakerOn); } catch (_) {}
+          try { _engine?.adjustRecordingSignalVolume(100); } catch (_) {}
+          try { _engine?.adjustPlaybackSignalVolume(100); } catch (_) {}
+        },
+        onUserJoined: (RtcConnection conn, int remoteUid, int elapsed) {
+          debugPrint('Agora: Remote user JOINED - uid: $remoteUid');
+          if (mounted) {
+            setState(() => _remoteUids.add(remoteUid));
+            if (widget.isGroupCall || _currentSessionStatus == 'accepted') {
+              _onCallConnected();
+            }
+          }
+          try {
+            _engine?.muteRemoteAudioStream(uid: remoteUid, mute: false);
+            _engine?.muteRemoteVideoStream(uid: remoteUid, mute: false);
+            _engine?.adjustUserPlaybackSignalVolume(uid: remoteUid, volume: 100);
+            _engine?.muteAllRemoteAudioStreams(false);
+            _engine?.muteAllRemoteVideoStreams(false);
+          } catch (_) {}
+        },
+        onAudioVolumeIndication: (RtcConnection conn, List<AudioVolumeInfo> speakers, int totalVolume, int speakerNumber) {
+          for (final s in speakers) {
+            if (s.volume != null && s.volume! > 5) {
+              debugPrint('Agora Audio Activity: uid=${s.uid}, volume=${s.volume}');
+            }
+          }
+        },
+        onUserOffline: (RtcConnection conn, int remoteUid, UserOfflineReasonType reason) {
+          debugPrint('Agora: Remote user OFFLINE - uid: $remoteUid, reason: $reason');
+          if (mounted) {
+            setState(() => _remoteUids.remove(remoteUid));
+          }
+        },
+        onTokenPrivilegeWillExpire: (RtcConnection conn, String token) async {
+          try {
+            final newToken = await AgoraTokenService.fetchRtcToken(channelName: widget.channelName, uid: _localUid);
+            if (_engine != null) await _engine!.renewToken(newToken);
+          } catch (_) {}
+        },
+        onError: (ErrorCodeType err, String msg) {
+          debugPrint('Agora ERROR: $err - $msg');
+        },
+      ));
+
+      try { await _engine!.enableAudio(); } catch (_) {}
+      try { await _engine!.enableLocalAudio(true); } catch (_) {}
+      try { await _engine!.setAudioProfile(profile: AudioProfileType.audioProfileDefault, scenario: AudioScenarioType.audioScenarioDefault); } catch (_) {}
+      try { await _engine!.setDefaultAudioRouteToSpeakerphone(true); } catch (_) {}
+      try { await _engine!.adjustRecordingSignalVolume(100); } catch (_) {}
+      try { await _engine!.adjustPlaybackSignalVolume(100); } catch (_) {}
+      try { await _engine!.enableAudioVolumeIndication(interval: 300, smooth: 3, reportVad: true); } catch (_) {}
+
+      if (widget.video) {
+        await _engine!.enableVideo();
+        await _engine!.enableLocalVideo(true);
+        try { await _engine!.startPreview(); } catch (_) {}
+      } else {
+        await _engine!.disableVideo();
       }
 
       _engineInitialized = true;
     } catch (e) {
+      debugPrint('Agora engine init error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Failed to initialize Agora engine: ${e.toString()}'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to initialize Agora: $e')),
+        );
       }
       return;
     }
 
-    // Get token
     try {
-      debugPrint('Agora: Fetching token for channel: ${widget.channelName}, uid: $_localUid');
       _token = await AgoraTokenService.fetchRtcToken(channelName: widget.channelName, uid: _localUid);
-      debugPrint('Agora: Token fetched successfully');
     } catch (e) {
       debugPrint('Agora: Token fetch FAILED: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to fetch token: $e')));
-      }
-      return;
     }
 
-    // Don't join channel yet - wait for call acceptance
-    debugPrint('Agora: Initialization complete, waiting for call acceptance');
-    
-    // If we received 'accepted' before initialization, join now
     if (_shouldJoinAfterInit && !_joined && !_isJoining) {
-      debugPrint('Agora: Performing deferred join after initialization...');
       _shouldJoinAfterInit = false;
+      await _joinChannel();
+    } else if (_isCaller && !_joined && !_isJoining) {
+      debugPrint('Agora: Caller pre-joining channel...');
       await _joinChannel();
     }
   }
 
-  // Join channel after call is accepted
   Future<void> _joinChannel() async {
-    if (_joined || _isJoining) {
-      debugPrint('AgoraWeb: Skipping join - already joined or joining (_joined=$_joined, _isJoining=$_isJoining)');
-      return;
-    }
-    
+    if (_joined || _isJoining) return;
     _isJoining = true;
-    
+
+    final tokenToUse = _token ?? '';
+
     if (kIsWeb) {
-      // Web join
-      if (_webClient != null && _engineInitialized && _token != null) {
+      if (_webClient != null && _engineInitialized) {
         try {
-          debugPrint('AgoraWeb: Joining channel: ${widget.channelName}, uid: $_localUid, video: ${widget.video}');
           await _webClient!.joinChannel(
-            token: _token!,
+            token: tokenToUse,
             channelName: widget.channelName,
             uid: _localUid,
             enableVideo: widget.video,
           );
-          debugPrint('AgoraWeb: Join channel completed, setting _joined=true');
-          setState(() => _joined = true);
+          if (mounted) setState(() => _joined = true);
           _isJoining = false;
-          await _syncCallStartTime();
-          debugPrint('AgoraWeb: Joined channel successfully, _joined=$_joined');
         } catch (e) {
-          debugPrint('AgoraWeb: Join channel error - $e');
+          debugPrint('AgoraWeb join error: $e');
           _isJoining = false;
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Failed to join channel: $e'),
-            ));
-          }
         }
+      } else {
+        _isJoining = false;
       }
     } else {
-      // Native join
       if (_engine != null && _engineInitialized) {
-        if (_token == null || _token!.isEmpty) {
-          debugPrint('Agora: Token is empty, cannot join');
+        try {
+          try { await _engine!.enableAudio(); } catch (_) {}
+          try { await _engine!.enableLocalAudio(true); } catch (_) {}
+          try { await _engine!.setDefaultAudioRouteToSpeakerphone(true); } catch (_) {}
+          try { await _engine!.muteLocalAudioStream(_muted); } catch (_) {}
+          try { await _engine!.adjustRecordingSignalVolume(100); } catch (_) {}
+          try { await _engine!.adjustPlaybackSignalVolume(100); } catch (_) {}
+          await _engine!.joinChannel(
+            token: tokenToUse,
+            channelId: widget.channelName,
+            uid: _localUid,
+            options: ChannelMediaOptions(
+              channelProfile: ChannelProfileType.channelProfileCommunication,
+              clientRoleType: ClientRoleType.clientRoleBroadcaster,
+              publishMicrophoneTrack: true,
+              publishCameraTrack: widget.video,
+              autoSubscribeAudio: true,
+              autoSubscribeVideo: widget.video,
+              enableAudioRecordingOrPlayout: true,
+            ),
+          );
+        } catch (e) {
+          debugPrint('Agora native join error: $e');
           _isJoining = false;
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing Agora token — cannot join channel')));
-          }
-          return;
         }
-
-        debugPrint('Agora: Joining channel: ${widget.channelName}, uid: $_localUid, video: ${widget.video}');
-        await _engine!.joinChannel(
-          token: _token!,
-          channelId: widget.channelName,
-          uid: _localUid,
-          options: const ChannelMediaOptions(
-            channelProfile: ChannelProfileType.channelProfileCommunication,
-            clientRoleType: ClientRoleType.clientRoleBroadcaster,
-          ),
-        );
-        // _isJoining will be reset in onJoinChannelSuccess callback
-        debugPrint('Agora: joinChannel() called, waiting for onJoinChannelSuccess callback...');
       } else {
         _isJoining = false;
       }
     }
   }
 
-  // Leave channel
   Future<void> _leaveChannel() async {
     if (!_joined) return;
-    
     if (kIsWeb) {
-      try {
-        await _webClient?.leaveChannel();
-        debugPrint('AgoraWeb: Left channel');
-      } catch (e) {
-        debugPrint('AgoraWeb: Error leaving channel: $e');
-      }
+      try { await _webClient?.leaveChannel(); } catch (_) {}
     } else {
-      try {
-        await _engine?.leaveChannel();
-        debugPrint('Agora: Left channel');
-      } catch (e) {
-        debugPrint('Agora: Error leaving channel: $e');
-      }
+      try { await _engine?.leaveChannel(); } catch (_) {}
     }
-    
     if (mounted) {
       setState(() {
         _joined = false;
@@ -364,45 +438,42 @@ class _CallPageState extends State<CallPage> {
     }
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _stopOutgoingTone();
-    _callSessionSub?.cancel();
-    
-    // Clean up based on platform
-    if (kIsWeb) {
-      // Web cleanup
-      if (_webClient != null) {
-        try {
-          _webClient!.leaveChannel();
-        } catch (_) {}
-        _webClient!.dispose();
+  void _startRingingTimeout() {
+    _ringingTimeoutTimer?.cancel();
+    _ringingTimeoutTimer = Timer(const Duration(seconds: 45), () async {
+      if (!_isCallConnected && mounted) {
+        debugPrint('Call timed out after 45s (no answer)');
+        final id = widget.callSessionId;
+        if (id != null) {
+          try {
+            await FirebaseFirestore.instance.collection('call_sessions').doc(id).update({
+              'status': 'missed',
+              'ended_at': DateTime.now().millisecondsSinceEpoch,
+            });
+          } catch (_) {}
+        }
+        _terminateCall('No answer');
       }
-    } else {
-      // Native cleanup
-      if (_engine != null && _engineInitialized) {
-        try {
-          _engine!.leaveChannel();
-        } catch (_) {}
-        try {
-          _engine!.release();
-        } catch (_) {}
-      }
-      _stopCallForeground();
-    }
-    
-    super.dispose();
+    });
+  }
+
+  Future<void> _playOutgoingRingtone() async {
+    try {
+      await NotificationService.instance.playOutgoingRingtone();
+    } catch (_) {}
+  }
+
+  Future<void> _stopOutgoingRingtone() async {
+    try {
+      await NotificationService.instance.stopOutgoingRingtone();
+    } catch (_) {}
   }
 
   void _attachCallSessionListener() {
     final id = widget.callSessionId;
-    
-    // For group calls, skip call session logic and join immediately
     if (widget.isGroupCall) {
-      debugPrint('Group call detected - joining immediately without waiting for status');
-      _isCaller = false; // In group calls, everyone is a receiver
-      // Join as soon as engine is ready
+      _isCaller = false;
+      _onCallConnected();
       if (_engineInitialized && !_joined && !_isJoining) {
         _joinChannel();
       } else {
@@ -410,529 +481,524 @@ class _CallPageState extends State<CallPage> {
       }
       return;
     }
-    
-    if (id == null) return;
-    
-    // First, check the current status immediately
+
+    if (id == null) {
+      // Direct call without session tracking (fallback)
+      _playOutgoingRingtone();
+      _startRingingTimeout();
+      return;
+    }
+
+    // Check initial state
     FirebaseFirestore.instance.collection('call_sessions').doc(id).get().then((doc) async {
       if (!doc.exists) return;
       final data = doc.data() ?? {};
       final status = data['status'] as String?;
       final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
-      
-      // Determine if we're the caller
+
+      _currentSessionStatus = status;
       if (uid != null && data['caller_id'] is String) {
-        _isCaller = (data['caller_id'] == uid);
+        final isMeCaller = (data['caller_id'] == uid);
+        if (mounted) {
+          setState(() {
+            _isCaller = isMeCaller;
+          });
+        } else {
+          _isCaller = isMeCaller;
+        }
+
+        if (_isCaller && status == 'ringing') {
+          _playOutgoingRingtone();
+          _startRingingTimeout();
+        } else if (!_isCaller && status == 'ringing') {
+          try {
+            await doc.reference.set({
+              'status': 'accepted',
+              'accepted_at': DateTime.now().millisecondsSinceEpoch,
+            }, SetOptions(merge: true));
+          } catch (_) {}
+        }
       }
-      
+
       debugPrint('Initial call session status: $status, isCaller: $_isCaller');
-      
-      // If already accepted when page opens (receiver case), join immediately
-      if (status == 'accepted' && !_joined && _engineInitialized) {
-        debugPrint('Call already accepted on page load, joining channel immediately...');
-        await _joinChannel();
-        return; // Don't start outgoing tone if already accepted
-      }
-      
-      // Start outgoing tone for caller ONLY if still ringing (not if accepted)
-      if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
-        debugPrint('Starting outgoing tone for caller...');
-        _outgoingToneStarted = true;
-        await _startOutgoingTone();
+
+      // If receiver opened the page, or status is already accepted
+      if (status == 'accepted' || !_isCaller) {
+        _onCallConnected();
+        if (_engineInitialized && !_joined && !_isJoining) {
+          await _joinChannel();
+        } else {
+          _shouldJoinAfterInit = true;
+        }
       }
     });
-    
-    // Then listen for status changes
+
+    // Real-time status listener
     _callSessionSub = FirebaseFirestore.instance.collection('call_sessions').doc(id).snapshots().listen((doc) async {
       if (!doc.exists) {
-        // Document deleted - treat as ended
-        debugPrint('Call session deleted - ending call');
-        _terminalReason ??= 'Call ended';
-        _stopOutgoingTone();
-        await _leaveChannel();
-        if (mounted) {
-          setState(() {});
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) Navigator.pop(context);
-          });
-        }
+        // Session deleted by caller/server
+        debugPrint('Call session document deleted - ending call');
+        _terminateCall('Call ended');
         return;
       }
-      
+
       final data = doc.data() ?? {};
       final status = data['status'] as String?;
       final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
-      
-      // Determine if we're the caller
+
+      _currentSessionStatus = status;
       if (uid != null && data['caller_id'] is String) {
-        _isCaller = (data['caller_id'] == uid);
-      }
-      
-      debugPrint('Call session status: $status, isCaller: $_isCaller, joined: $_joined, callStart: $_callStart, terminalReason: $_terminalReason');
-      
-      // If already in terminal state, ignore further updates
-      if (_terminalReason != null) {
-        debugPrint('Already in terminal state ($_terminalReason), ignoring status update');
-        return;
-      }
-      
-      // Start outgoing tone for caller only when ringing
-      if (_isCaller && !_outgoingToneStarted && status == 'ringing') {
-        _outgoingToneStarted = true;
-        await _startOutgoingTone();
-      }
-      
-      // When call is accepted, stop ringtone and join channel (caller & callee)
-      if (status == 'accepted') {
-        debugPrint('=== Call ACCEPTED - Stopping all ringtones ===');
-        
-        // CRITICAL: Stop outgoing tone IMMEDIATELY for caller
-        _stopOutgoingTone();
-
-        // For debugging: see which side is reacting
-        debugPrint('Call accepted snapshot: isCaller=$_isCaller, joined=$_joined, isJoining=$_isJoining, engineInitialized=$_engineInitialized');
-
-        // Join channel only after acceptance and only once, on both sides
-        if (!_joined && !_isJoining && _engineInitialized) {
-          debugPrint('Call accepted (isCaller=$_isCaller), joining channel NOW...');
-          await _joinChannel();
-        } else if (!_engineInitialized && !_joined && !_isJoining) {
-          // Engine not ready yet, defer join until initialization completes
-          debugPrint('Call accepted but engine not initialized yet, deferring join...');
-          _shouldJoinAfterInit = true;
+        final newIsCaller = (data['caller_id'] == uid);
+        if (_isCaller != newIsCaller && mounted) {
+          setState(() {
+            _isCaller = newIsCaller;
+          });
         } else {
-          debugPrint('Call accepted but skipping join (_joined=$_joined, _isJoining=$_isJoining, _engineInitialized=$_engineInitialized)');
+          _isCaller = newIsCaller;
+        }
+      }
+
+      debugPrint('Call session status update: $status, isCaller: $_isCaller');
+
+      if (_terminalReason != null) return;
+
+      if (status == 'accepted') {
+        // Receiver accepted! Start talking session and timer immediately
+        _onCallConnected();
+        if (!_joined && !_isJoining && _engineInitialized) {
+          await _joinChannel();
+        } else if (!_engineInitialized) {
+          _shouldJoinAfterInit = true;
         }
       } else if (status == 'rejected') {
-        debugPrint('Call rejected - closing immediately');
-        _terminalReason = 'Call rejected';
-        _stopOutgoingTone();
-        await _leaveChannel();
-        if (mounted) {
-          setState(() {});
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) Navigator.pop(context);
-          });
-        }
+        debugPrint('Call rejected by receiver - closing caller screen immediately');
+        _terminateCall('Call declined');
+      } else if (status == 'cancelled') {
+        debugPrint('Call cancelled by caller - closing receiver screen immediately');
+        _terminateCall('Call cancelled');
       } else if (status == 'ended') {
-        debugPrint('Call ended - closing immediately');
-        _terminalReason = 'Call ended';
-        _stopOutgoingTone();
-        await _leaveChannel();
-        if (mounted) {
-          setState(() {});
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) Navigator.pop(context);
-          });
-        }
+        debugPrint('Call ended');
+        _terminateCall('Call ended');
       } else if (status == 'missed') {
-        debugPrint('Call missed - closing immediately');
-        _terminalReason = 'Missed call';
-        _stopOutgoingTone();
-        await _leaveChannel();
-        if (mounted) {
-          setState(() {});
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) Navigator.pop(context);
-          });
-        }
+        _terminateCall('Missed call');
       }
     });
   }
 
-  Future<void> _startOutgoingTone() async {
-    // Skip audio playback on web for now (asset loading issues)
-    if (kIsWeb) return;
-    
-    // Respect Silent setting and selected ringtone from SharedPreferences; fallback to system beeps
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final silent = prefs.getBool('ringtone_call_silent') ?? false;
-      if (silent) return;
-
-      String path = prefs.getString('ringtone_call') ?? '';
-      if (path.isEmpty) {
-        path = 'assets/mp3 file/Lovely-Alarm.mp3';
-      }
-      
-      debugPrint('Starting outgoing tone with path: $path');
-      
-      // Ensure asset exists; if not, let it throw and we will fallback
-      if (!kIsWeb) {
-        await rootBundle.load(path);
-        debugPrint('Asset loaded successfully');
-      }
-
-      _outgoingPlayer?.stop();
-      await _outgoingPlayer?.dispose();
-      _outgoingPlayer = AudioPlayer();
-      
-      // Configure audio context for outgoing call
-      await _outgoingPlayer!.setAudioContext(AudioContext(
-        android: const AudioContextAndroid(
-          isSpeakerphoneOn: true,
-          contentType: AndroidContentType.music,
-          usageType: AndroidUsageType.notificationRingtone,
-          audioFocus: AndroidAudioFocus.gain,
-        ),
-      ));
-      
-      await _outgoingPlayer!.setReleaseMode(ReleaseMode.loop);
-      await _outgoingPlayer!.setVolume(1.0);
-      
-      // Strip 'assets/' prefix for AssetSource
-      String strippedPath = path.replaceFirst('assets/', '');
-      debugPrint('Playing outgoing tone: $strippedPath');
-      
-      // Start playing selected asset in loop
-      await _outgoingPlayer!.play(AssetSource(strippedPath));
-      _outgoingPlayerActive = true;
-      debugPrint('Outgoing tone started successfully');
-      return; // Success; skip fallback beeps
-    } catch (e) {
-      debugPrint('Error starting outgoing tone: $e');
-      // Fallback to periodic system alert beeps
-    }
-
-    _outgoingToneTimer?.cancel();
-    _outgoingToneTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
-      if (_terminalReason != null || _joined) { _stopOutgoingTone(); return; }
-      try { await SystemSound.play(SystemSoundType.alert); } catch (_) {}
+  void _onCallConnected() {
+    if (_isCallConnected) return;
+    debugPrint('=== CALL CONNECTED - Transitioning to Talking Screen & Starting Timer ===');
+    _stopOutgoingRingtone();
+    _ringingTimeoutTimer?.cancel();
+    setState(() {
+      _isCallConnected = true;
     });
-  }
-  void _stopOutgoingTone() {
-    _outgoingToneTimer?.cancel();
-    _outgoingToneTimer = null;
-    if (_outgoingPlayerActive) {
-      try { _outgoingPlayer?.stop(); } catch (_) {}
-      try { _outgoingPlayer?.dispose(); } catch (_) {}
-      _outgoingPlayer = null;
-      _outgoingPlayerActive = false;
+    _startElapsedTimer();
+    _startCallForeground();
+
+    // Ensure audio routes and video streams are active
+    if (!kIsWeb && _engine != null) {
+      try { _engine!.enableAudio(); } catch (_) {}
+      try { _engine!.enableLocalAudio(true); } catch (_) {}
+      try { _engine!.muteLocalAudioStream(_muted); } catch (_) {}
+      try { _engine!.setEnableSpeakerphone(_speakerOn); } catch (_) {}
+      try { _engine!.adjustRecordingSignalVolume(100); } catch (_) {}
+      try { _engine!.adjustPlaybackSignalVolume(100); } catch (_) {}
+      try { _engine!.muteAllRemoteAudioStreams(false); } catch (_) {}
+      if (widget.video) {
+        try {
+          _engine!.enableVideo();
+          _engine!.enableLocalVideo(true);
+        } catch (_) {}
+      }
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.video ? 'Video Call' : 'Audio Call'),
-      ),
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // Video or audio content
-          Positioned.fill(
-            child: Column(
-              children: [
-                Expanded(
-                  child: widget.video ? _buildVideoViews() : _buildAudioStatus(),
-                ),
-                const SizedBox(height: 90), // Space for controls
-              ],
-            ),
+  void _terminateCall(String reason) {
+    if (_terminalReason != null) return;
+    _terminalReason = reason;
+    _stopOutgoingRingtone();
+    _ringingTimeoutTimer?.cancel();
+    _timer?.cancel();
+    _leaveChannel();
+    _stopCallForeground();
+    if (mounted) {
+      setState(() {});
+      // Close screen immediately
+      Navigator.pop(context);
+      if (reason.isNotEmpty && reason != 'Call ended') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(reason),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
           ),
-          // Controls always on top (especially important for web)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _buildControls(),
-          ),
-        ],
-      ),
-    );
+        );
+      }
+    }
+  }
+
+  void _startElapsedTimer() {
+    _timer?.cancel();
+    _callStart = DateTime.now();
+    _elapsed = Duration.zero;
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_callStart != null && mounted) {
+        setState(() {
+          _elapsed = DateTime.now().difference(_callStart!);
+        });
+      }
+    });
   }
 
   static const MethodChannel _appChannel = MethodChannel('com.example.myapp/app');
   Future<void> _startCallForeground() async {
-    if (kIsWeb) return; // No foreground service on web
-    
-    // Check required permissions before starting foreground service
-    if (!kIsWeb) {
-      try {
-        // Always need microphone permission
-        final micStatus = await Permission.microphone.status;
-        if (!micStatus.isGranted) {
-          debugPrint('Skipping foreground service - microphone permission not granted');
-          return;
-        }
-        
-        // For video calls, also check camera permission (though service won't use camera type)
-        if (widget.video) {
-          final camStatus = await Permission.camera.status;
-          if (!camStatus.isGranted) {
-            debugPrint('Skipping foreground service - camera permission not granted for video call');
-            return;
-          }
-        }
-      } catch (e) {
-        debugPrint('Permission check failed: $e');
-        return; // Skip service if permission check fails
-      }
-    }
-    
+    if (kIsWeb) return;
     final title = widget.video ? 'Video call' : 'Audio call';
     final name = _remoteUserData?['name'] ?? widget.remoteUserId ?? '';
     final text = name.isNotEmpty ? 'Talking with $name' : '';
-    
-    try { 
+    try {
       await _appChannel.invokeMethod('startCallForeground', {
-        'title': title, 
-        'text': text, 
-        'video': widget.video
-      }); 
-      debugPrint('Call foreground service started successfully');
-    } catch (e) {
-      debugPrint('Failed to start call foreground service: $e');
-      // Don't crash - call can continue without foreground service
-    }
+        'title': title,
+        'text': text,
+        'video': widget.video,
+      });
+    } catch (_) {}
   }
+
   Future<void> _stopCallForeground() async {
-    if (kIsWeb) return; // No foreground service on web
+    if (kIsWeb) return;
     try { await _appChannel.invokeMethod('stopCallForeground'); } catch (_) {}
   }
 
-  Widget _buildAudioStatus() {
-    final name = _remoteUserData?['name'] ?? widget.remoteUserId ?? 'User';
-    final avatarUrl = _remoteUserData?['profile_image'];
-    final elapsedStr = _formatElapsed();
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CircleAvatar(
-            radius: 42,
-            backgroundColor: Colors.blueGrey,
-            backgroundImage: (avatarUrl is String && avatarUrl.isNotEmpty)
-                ? NetworkImage(avatarUrl)
-                : null,
-            child: (avatarUrl is String && avatarUrl.isNotEmpty)
-                ? null
-                : Text(name.isNotEmpty ? name[0].toUpperCase() : '?', style: const TextStyle(fontSize: 28, color: Colors.white)),
-          ),
-          const SizedBox(height: 16),
-            Text(
-              _joined ? name : 'Calling...'
-              ,style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w500),
-            ),
-          const SizedBox(height: 8),
-          Text(
-            _joined ? elapsedStr : 'Waiting for the other user...',
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-        ],
+  Future<void> _cancelOrEndCall() async {
+    final id = widget.callSessionId;
+    final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
+    _stopOutgoingRingtone();
+    _ringingTimeoutTimer?.cancel();
+    if (id != null) {
+      try {
+        final statusToSet = _isCallConnected ? 'ended' : 'cancelled';
+        final updates = <String, dynamic>{
+          'status': statusToSet,
+          'ended_at': DateTime.now().millisecondsSinceEpoch,
+        };
+        if (uid != null) updates['ended_by'] = uid;
+        await FirebaseFirestore.instance.collection('call_sessions').doc(id).update(updates);
+      } catch (_) {}
+    }
+    _terminateCall(_isCallConnected ? 'Call ended' : 'Call cancelled');
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    _stopOutgoingRingtone();
+    _ringingTimeoutTimer?.cancel();
+    _timer?.cancel();
+    _callSessionSub?.cancel();
+    if (kIsWeb) {
+      if (_webClient != null) {
+        try { _webClient!.leaveChannel(); } catch (_) {}
+        _webClient!.dispose();
+      }
+    } else {
+      if (_engine != null && _engineInitialized) {
+        try { _engine!.leaveChannel(); } catch (_) {}
+        try { _engine!.release(); } catch (_) {}
+      }
+      _stopCallForeground();
+    }
+    super.dispose();
+  }
+
+  String _formatElapsed() {
+    final d = _elapsed;
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // If not connected yet and caller -> show dedicated Calling Screen (Receiver Avatar, Name, "Calling...", Cancel button)
+    final isCallingPhase = !_isCallConnected && _isCaller;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F1117),
+      body: SafeArea(
+        child: isCallingPhase
+            ? _buildCallingScreen()
+            : _buildTalkingScreen(),
       ),
     );
   }
 
-  Widget _buildZoomableVideo(Widget child) {
-    return kIsWeb
-        ? _buildWebZoomableVideo(child)
-        : _buildMobileZoomableVideo(child);
-  }
+  /// Calling Screen: Shown to the caller while waiting for the receiver to answer
+  Widget _buildCallingScreen() {
+    final name = _remoteUserData?['name'] ?? widget.remoteUserId ?? 'User';
+    final avatarUrl = _remoteUserData?['profile_image'];
 
-  // Web: Mouse wheel zoom (requires click first to enable)
-  Widget _buildWebZoomableVideo(Widget child) {
-    return MouseRegion(
-      cursor: _zoomEnabled ? SystemMouseCursors.zoomIn : SystemMouseCursors.basic,
-      child: GestureDetector(
-        onTap: () {
-          // Single tap to enable/disable zoom
-          setState(() {
-            _zoomEnabled = !_zoomEnabled;
-            debugPrint('Web zoom ${_zoomEnabled ? "enabled" : "disabled"}');
-          });
-        },
-        onDoubleTap: () {
-          // Double tap to reset zoom
-          setState(() {
-            _zoomLevel = 1.0;
-            _zoomOffset = Offset.zero;
-            _zoomEnabled = false;
-            debugPrint('Web zoom reset');
-          });
-        },
-        child: Listener(
-          onPointerSignal: (signal) {
-            if (signal is PointerScrollEvent && _zoomEnabled) {
-              setState(() {
-                // Zoom in/out with mouse wheel (only if enabled)
-                final delta = signal.scrollDelta.dy;
-                if (delta < 0) {
-                  // Scroll up = zoom in
-                  _zoomLevel = (_zoomLevel + 0.2).clamp(1.0, 5.0);
-                } else {
-                  // Scroll down = zoom out
-                  _zoomLevel = (_zoomLevel - 0.2).clamp(1.0, 5.0);
-                }
-                debugPrint('Web zoom level: $_zoomLevel');
-              });
-            }
-          },
-          child: ClipRect(
-            child: OverflowBox(
-              alignment: Alignment.center,
-              child: Transform.scale(
-                scale: _zoomLevel,
-                alignment: Alignment.center,
-                child: child,
+    return Stack(
+      children: [
+        // Background subtle gradient
+        Positioned.fill(
+          child: Container(
+            decoration: const BoxDecoration(
+              gradient: RadialGradient(
+                center: Alignment(0, -0.25),
+                radius: 1.2,
+                colors: [Color(0xFF1E2638), Color(0xFF0A0D14)],
               ),
             ),
           ),
         ),
-      ),
+        Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Pulsing Avatar with glow rings
+              ScaleTransition(
+                scale: _pulseAnimation,
+                child: Container(
+                  width: 140,
+                  height: 140,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: (widget.video ? Colors.purpleAccent : Colors.greenAccent).withOpacity(0.6),
+                      width: 3,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: (widget.video ? Colors.purpleAccent : Colors.greenAccent).withOpacity(0.35),
+                        blurRadius: 36,
+                        spreadRadius: 8,
+                      ),
+                    ],
+                  ),
+                  child: ClipOval(
+                    child: (avatarUrl is String && avatarUrl.isNotEmpty)
+                        ? Image.network(avatarUrl, fit: BoxFit.cover)
+                        : Container(
+                            color: const Color(0xFF2A3447),
+                            alignment: Alignment.center,
+                            child: Text(
+                              name.isNotEmpty ? name[0].toUpperCase() : '?',
+                              style: const TextStyle(fontSize: 52, color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 32),
+              // Receiver Name
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  name,
+                  style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Calling / Ringing status badge
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.white12, width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.video ? Icons.videocam : Icons.call,
+                      size: 16,
+                      color: widget.video ? Colors.purpleAccent : Colors.greenAccent,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      widget.video ? 'Calling (Video)...' : 'Ringing...',
+                      style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500, letterSpacing: 0.5),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Bottom Cancel Button
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 48,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InkWell(
+                onTap: _cancelOrEndCall,
+                borderRadius: BorderRadius.circular(40),
+                child: Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.shade700,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.redAccent.withOpacity(0.45),
+                        blurRadius: 18,
+                        spreadRadius: 3,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.call_end, color: Colors.white, size: 36),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text('Cancel', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w500)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
-  // Mobile: Pinch-to-zoom with two fingers
-  Widget _buildMobileZoomableVideo(Widget child) {
-    return GestureDetector(
-      onScaleStart: (details) {
-        // Store initial zoom level
-      },
-      onScaleUpdate: (details) {
-        setState(() {
-          // Update zoom level based on pinch gesture
-          _zoomLevel = (details.scale * _zoomLevel).clamp(1.0, 5.0);
-        });
-      },
-      onScaleEnd: (details) {
-        // Optionally snap back if zoomed out too far
-        if (_zoomLevel < 1.0) {
-          setState(() {
-            _zoomLevel = 1.0;
-            _zoomOffset = Offset.zero;
-          });
-        }
-      },
-      onDoubleTap: () {
-        // Double tap to reset zoom
-        setState(() {
-          _zoomLevel = 1.0;
-          _zoomOffset = Offset.zero;
-        });
-      },
-      child: Transform.scale(
-        scale: _zoomLevel,
-        child: Transform.translate(
-          offset: _zoomOffset,
-          child: child,
+  /// Talking Screen: Shown once receiver accepts the call and talking session begins
+  Widget _buildTalkingScreen() {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Column(
+            children: [
+              Expanded(
+                child: widget.video ? _buildVideoViews() : _buildAudioTalkingView(),
+              ),
+              const SizedBox(height: 90),
+            ],
+          ),
         ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: _buildControls(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAudioTalkingView() {
+    final name = _remoteUserData?['name'] ?? widget.remoteUserId ?? 'User';
+    final avatarUrl = _remoteUserData?['profile_image'];
+    final elapsedStr = _formatElapsed();
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 120,
+            height: 120,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.greenAccent.withOpacity(0.6), width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.greenAccent.withOpacity(0.15),
+                  blurRadius: 24,
+                  spreadRadius: 4,
+                ),
+              ],
+            ),
+            child: ClipOval(
+              child: (avatarUrl is String && avatarUrl.isNotEmpty)
+                  ? Image.network(avatarUrl, fit: BoxFit.cover)
+                  : Container(
+                      color: const Color(0xFF2A3447),
+                      alignment: Alignment.center,
+                      child: Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: const TextStyle(fontSize: 44, color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            name,
+            style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 10),
+          // Talking duration count
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white10,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              elapsedStr,
+              style: const TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: 1),
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildVideoViews() {
-    // On web, video is rendered in HTML containers, so we show Flutter overlay
     if (kIsWeb) {
-      // If video is disabled, show profile picture overlay
       if (!_videoEnabled && _remoteUserData != null) {
         final profileUrl = _remoteUserData!['profile_image'] as String?;
-        return Stack(
-          children: [
-            // Blurred background
-            Positioned.fill(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                child: Container(color: Colors.black.withOpacity(0.5)),
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 64,
+                backgroundImage: profileUrl != null && profileUrl.isNotEmpty ? NetworkImage(profileUrl) : null,
+                child: profileUrl == null || profileUrl.isEmpty ? const Icon(Icons.person, size: 64, color: Colors.white) : null,
               ),
-            ),
-            // Profile picture in center
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircleAvatar(
-                    radius: 80,
-                    backgroundImage: profileUrl != null && profileUrl.isNotEmpty
-                        ? NetworkImage(profileUrl)
-                        : null,
-                    child: profileUrl == null || profileUrl.isEmpty
-                        ? const Icon(Icons.person, size: 80, color: Colors.white)
-                        : null,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    _remoteUserData!['name'] ?? 'Unknown',
-                    style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Video is off',
-                    style: TextStyle(color: Colors.white70, fontSize: 16),
-                  ),
-                ],
-              ),
-            ),
-          ],
+              const SizedBox(height: 16),
+              Text(_remoteUserData!['name'] ?? 'User', style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              Text(_formatElapsed(), style: const TextStyle(color: Colors.greenAccent, fontSize: 16)),
+            ],
+          ),
         );
       }
-      // Video containers are in HTML DOM, so just show a transparent container
       return Container(color: Colors.transparent);
     }
-    
-    // Picture-in-Picture with draggable local preview and tap-to-swap full-screen
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxW = constraints.maxWidth;
         final maxH = constraints.maxHeight;
         const pipW = 120.0;
         const pipH = 160.0;
-        // Initialize PiP to bottom-right on first build where size is known
         _pipOffset ??= Offset(maxW - pipW - 12, maxH - pipH - 12);
 
         int? primaryRemoteUid = _remoteUids.isNotEmpty ? _remoteUids.first : null;
 
         Widget buildRemoteFull() {
-          if (primaryRemoteUid == null) {
-            return const Center(child: Text('Waiting for the other user...', style: TextStyle(color: Colors.white38)));
-          }
-          if (_engine == null) {
-            return const Center(child: Text('Remote video unavailable', style: TextStyle(color: Colors.white70)));
-          }
-          // If remote video is disabled, show profile picture with blurred background
-          if (!_videoEnabled && _remoteUserData != null) {
-            final profileUrl = _remoteUserData!['profile_image'] as String?;
-            return Stack(
-              children: [
-                // Blurred background
-                Positioned.fill(
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Container(color: Colors.black.withOpacity(0.5)),
-                  ),
-                ),
-                // Profile picture in center
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircleAvatar(
-                        radius: 80,
-                        backgroundImage: profileUrl != null && profileUrl.isNotEmpty
-                            ? NetworkImage(profileUrl)
-                            : null,
-                        child: profileUrl == null || profileUrl.isEmpty
-                            ? const Icon(Icons.person, size: 80, color: Colors.white)
-                            : null,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _remoteUserData!['name'] ?? 'Unknown',
-                        style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Video is off',
-                        style: TextStyle(color: Colors.white70, fontSize: 16),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+          if (primaryRemoteUid == null || _engine == null) {
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Colors.white70),
+                  const SizedBox(height: 16),
+                  Text('Connecting with ${_remoteUserData?['name'] ?? 'User'}...', style: const TextStyle(color: Colors.white70)),
+                ],
+              ),
             );
           }
-          // Fill screen: use FittedBox to cover while preserving aspect
           return ClipRect(
             child: FittedBox(
               fit: BoxFit.cover,
@@ -977,6 +1043,7 @@ class _CallPageState extends State<CallPage> {
             decoration: BoxDecoration(
               color: Colors.black54,
               borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white24, width: 1),
               boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
             ),
             child: ClipRRect(
@@ -1001,6 +1068,7 @@ class _CallPageState extends State<CallPage> {
             decoration: BoxDecoration(
               color: Colors.black54,
               borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white24, width: 1),
               boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
             ),
             child: ClipRRect(
@@ -1016,16 +1084,28 @@ class _CallPageState extends State<CallPage> {
           );
         }
 
-        final mainView = _terminalReason != null
-          ? Center(child: Text(_terminalReason!, style: const TextStyle(color: Colors.white, fontSize: 22)))
-          : _buildZoomableVideo(_showLocalFull ? buildLocalFull() : buildRemoteFull());
-        final pipView = (_terminalReason != null)
-          ? const SizedBox.shrink()
-          : (_showLocalFull ? buildRemotePip() : buildLocalPip());
-
         return Stack(
           children: [
-            Positioned.fill(child: mainView),
+            Positioned.fill(child: _showLocalFull ? buildLocalFull() : buildRemoteFull()),
+            // Top duration badge
+            Positioned(
+              top: 16,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    _formatElapsed(),
+                    style: const TextStyle(color: Colors.greenAccent, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ),
             Positioned(
               left: _pipOffset!.dx,
               top: _pipOffset!.dy,
@@ -1038,7 +1118,7 @@ class _CallPageState extends State<CallPage> {
                   final dy = (_pipOffset!.dy + details.delta.dy).clamp(0.0, maxH - pipH);
                   setState(() => _pipOffset = Offset(dx, dy));
                 },
-                child: pipView,
+                child: _showLocalFull ? buildRemotePip() : buildLocalPip(),
               ),
             ),
           ],
@@ -1049,180 +1129,85 @@ class _CallPageState extends State<CallPage> {
 
   Widget _buildControls() {
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.black,
-        boxShadow: kIsWeb ? [
-          const BoxShadow(
-            color: Colors.black87,
-            blurRadius: 10,
-            offset: Offset(0, -2),
-          )
-        ] : null,
+      decoration: const BoxDecoration(
+        color: Color(0xFF141822),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 24),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
+          // Mute Mic
           CircleAvatar(
-            backgroundColor: _muted ? Colors.red : Colors.grey[800],
+            radius: 26,
+            backgroundColor: _muted ? Colors.redAccent : const Color(0xFF2A3447),
             child: IconButton(
               icon: Icon(_muted ? Icons.mic_off : Icons.mic, color: Colors.white),
               onPressed: () async {
                 setState(() => _muted = !_muted);
-                debugPrint('=== Mute button pressed: $_muted (affects ONLY local microphone) ===');
                 if (kIsWeb) {
-                  // Web platform - only mutes local outgoing audio
-                  if (_webClient != null) {
-                    await _webClient!.muteLocalAudio(_muted);
-                    debugPrint('Web: Local microphone ${_muted ? 'muted' : 'unmuted'} - remote audio playback NOT affected');
-                  }
+                  if (_webClient != null) await _webClient!.muteLocalAudio(_muted);
                 } else {
-                  // Native platform - only mutes local outgoing audio stream
-                  if (_engine != null) {
-                    await _engine!.muteLocalAudioStream(_muted);
-                    debugPrint('Native: Local audio stream ${_muted ? 'muted' : 'unmuted'} - remote audio playback NOT affected');
-                  }
+                  if (_engine != null) await _engine!.muteLocalAudioStream(_muted);
                 }
               },
             ),
           ),
+          // Switch Camera (for video on mobile)
           if (widget.video && !kIsWeb)
             CircleAvatar(
-              backgroundColor: Colors.grey[800],
+              radius: 26,
+              backgroundColor: const Color(0xFF2A3447),
               child: IconButton(
                 icon: const Icon(Icons.switch_camera, color: Colors.white),
-                  onPressed: () async {
+                onPressed: () async {
                   _frontCamera = !_frontCamera;
                   if (_engine != null) await _engine!.switchCamera();
                 },
               ),
             ),
+          // Toggle Video
           if (widget.video)
             CircleAvatar(
-              backgroundColor: _videoEnabled ? Colors.grey[800] : Colors.red,
+              radius: 26,
+              backgroundColor: _videoEnabled ? const Color(0xFF2A3447) : Colors.redAccent,
               child: IconButton(
                 icon: Icon(_videoEnabled ? Icons.videocam : Icons.videocam_off, color: Colors.white),
                 onPressed: () async {
                   setState(() => _videoEnabled = !_videoEnabled);
                   if (kIsWeb) {
-                    // Web platform
                     if (_webClient != null) await _webClient!.enableLocalVideo(_videoEnabled);
                   } else {
-                    // Native platform
-                    if (_engine != null) {
-                      if (_videoEnabled) {
-                        await _engine!.enableLocalVideo(true);
-                      } else {
-                        await _engine!.enableLocalVideo(false);
-                      }
-                    }
+                    if (_engine != null) await _engine!.enableLocalVideo(_videoEnabled);
                   }
                 },
               ),
             ),
-          CircleAvatar(
-            backgroundColor: Colors.red,
-            child: IconButton(
-              icon: const Icon(Icons.call_end, color: Colors.white),
-              onPressed: () async {
-                try {
-                  final id = widget.callSessionId;
-                  if (id != null) {
-                    final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
-                    final updates = <String, dynamic>{
-                      'status': 'ended',
-                      'ended_at': DateTime.now().millisecondsSinceEpoch,
-                    };
-                    if (uid != null) updates['ended_by'] = uid;
-                    await FirebaseFirestore.instance.collection('call_sessions').doc(id).update(updates);
-                  }
-                } catch (_) {}
-                Navigator.pop(context);
-              },
-            ),
-          ),
-          if (!kIsWeb) // Speaker toggle only on mobile
+          // Speaker toggle (mobile)
+          if (!kIsWeb)
             CircleAvatar(
-              backgroundColor: Colors.grey[800],
+              radius: 26,
+              backgroundColor: const Color(0xFF2A3447),
               child: IconButton(
                 icon: Icon(_speakerOn ? Icons.volume_up : Icons.hearing, color: Colors.white),
-                  onPressed: () async {
+                onPressed: () async {
                   _speakerOn = !_speakerOn;
                   if (_engine != null) await _engine!.setEnableSpeakerphone(_speakerOn);
                   setState(() {});
                 },
               ),
             ),
+          // End Call button (Red)
+          CircleAvatar(
+            radius: 28,
+            backgroundColor: Colors.redAccent.shade700,
+            child: IconButton(
+              icon: const Icon(Icons.call_end, color: Colors.white, size: 28),
+              onPressed: _cancelOrEndCall,
+            ),
+          ),
         ],
       ),
     );
-  }
-
-  void _startElapsedTimer({DateTime? syncedStartTime}) {
-    if (syncedStartTime != null) {
-      _callStart = syncedStartTime;
-    } else {
-      _callStart ??= DateTime.now();
-    }
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_callStart != null) {
-        setState(() => _elapsed = DateTime.now().difference(_callStart!));
-      }
-    });
-  }
-
-  Future<void> _syncCallStartTime() async {
-    final sessionId = widget.callSessionId;
-    if (sessionId == null) {
-      // No session to sync with (fallback)
-      _startElapsedTimer();
-      return;
-    }
-
-    try {
-      final sessionRef = FirebaseFirestore.instance.collection('call_sessions').doc(sessionId);
-      final now = DateTime.now().millisecondsSinceEpoch;
-      
-      // Try to set the call_start_time atomically (only first joiner sets it)
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final snapshot = await transaction.get(sessionRef);
-        if (!snapshot.exists) return;
-        
-        final data = snapshot.data();
-        final existingStartTime = data?['call_start_time'];
-        
-        if (existingStartTime == null) {
-          // First user to join - set the start time
-          transaction.update(sessionRef, {'call_start_time': now});
-          debugPrint('Set call_start_time: $now');
-        }
-      });
-
-      // Now read the synced start time
-      final doc = await sessionRef.get();
-      if (doc.exists) {
-        final startTimeMs = doc.data()?['call_start_time'] as int?;
-        if (startTimeMs != null) {
-          final syncedStartTime = DateTime.fromMillisecondsSinceEpoch(startTimeMs);
-          debugPrint('Synced call start time: $syncedStartTime');;
-          _startElapsedTimer(syncedStartTime: syncedStartTime);
-          return;
-        }
-      }
-    } catch (e) {
-      debugPrint('Error syncing call start time: $e');
-    }
-
-    // Fallback to local time if sync fails
-    _startElapsedTimer();
-  }
-
-  String _formatElapsed() {
-    final d = _elapsed;
-    final h = d.inHours;
-    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 }

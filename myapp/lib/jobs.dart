@@ -157,6 +157,9 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
 
     await FirebaseFirestore.instance.runTransaction((tx) async {
       final likeSnap = await tx.get(likeRef);
+      final postSnap = await tx.get(postRef);
+      final postOwner = (postSnap.data()?['user_id']) as String?;
+
       if (likeSnap.exists) {
         // Unlike
         tx.delete(likeRef);
@@ -164,11 +167,27 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
       } else {
         // Like with default reaction 'like'
         tx.set(likeRef, {
-          // Per security rules, like docs may only contain 'reaction' and 'timestamp'
           'reaction': 'like',
           'timestamp': DateTime.now().millisecondsSinceEpoch,
         });
         tx.update(postRef, {'likes_count': FieldValue.increment(1)});
+
+        if (postOwner != null && postOwner.isNotEmpty && postOwner != user.uid) {
+          final notifRef = FirebaseFirestore.instance.collection('notifications').doc();
+          tx.set(notifRef, {
+            'to': postOwner,
+            'type': 'like',
+            'reaction': 'like',
+            'from': user.uid,
+            'fromName': user.displayName ?? 'Someone',
+            'fromImage': user.photoURL ?? '',
+            'postId': postId,
+            'text': '${user.displayName ?? "Someone"} liked your job post',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'read': false,
+            'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+          });
+        }
       }
     });
   }
@@ -186,6 +205,27 @@ class _JobsPageState extends State<JobsPage> with TickerProviderStateMixin {
         .collection('comments')
         .add({'user_id': user.uid, 'text': text, 'timestamp': ts});
     await FirebaseFirestore.instance.collection('posts').doc(postId).update({'comments_count': FieldValue.increment(1)});
+
+    try {
+      final postDoc = await FirebaseFirestore.instance.collection('posts').doc(postId).get();
+      final postOwner = (postDoc.data()?['user_id']) as String?;
+      if (postOwner != null && postOwner.isNotEmpty && postOwner != user.uid) {
+        await FirebaseFirestore.instance.collection('notifications').add({
+          'to': postOwner,
+          'type': 'comment',
+          'from': user.uid,
+          'fromName': user.displayName ?? 'Someone',
+          'fromImage': user.photoURL ?? '',
+          'postId': postId,
+          'commentText': text,
+          'text': '${user.displayName ?? "Someone"} commented on your job post',
+          'timestamp': ts,
+          'read': false,
+          'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+        });
+      }
+    } catch (_) {}
+
     controller.clear();
   }
 

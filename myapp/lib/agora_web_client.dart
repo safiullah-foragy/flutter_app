@@ -131,6 +131,17 @@ class AgoraWebClient {
         })
       ]);
 
+      try {
+        AgoraRTC.callMethod('onAudioAutoplayFailed', [
+          js.allowInterop(() {
+            debugPrint('AgoraWeb: Audio autoplay failed - user interaction needed');
+            html.window.onClick.first.then((_) {
+              try { AgoraRTC.callMethod('resumeAudio', []); } catch (_) {}
+            });
+          })
+        ]);
+      } catch (_) {}
+
       debugPrint('AgoraWeb: Event listeners registered');
     } catch (e) {
       debugPrint('AgoraWeb: Initialization error - $e');
@@ -148,19 +159,31 @@ class AgoraWebClient {
     try {
       debugPrint('AgoraWeb: Joining channel: $channelName, uid: $uid, video: $enableVideo');
 
-      // Create local tracks
-      final AgoraRTC = js.context['AgoraRTC'];
-      
-      _localAudioTrack = await _promiseToFuture(
-        AgoraRTC.callMethod('createMicrophoneAudioTrack')
-      );
-      debugPrint('AgoraWeb: Audio track created');
-
-      if (enableVideo) {
-        _localVideoTrack = await _promiseToFuture(
-          AgoraRTC.callMethod('createCameraVideoTrack')
-        );
-        debugPrint('AgoraWeb: Video track created');
+      // Create local tracks via native JS helper
+      try {
+        final helperCreate = js.context['agoraCreateTracks'];
+        if (helperCreate != null) {
+          final tracks = await _promiseToFuture(
+            js.context.callMethod('agoraCreateTracks', [enableVideo])
+          );
+          if (tracks is js.JsArray || tracks is js.JsObject) {
+            _localAudioTrack = tracks[0] as js.JsObject?;
+            _localVideoTrack = tracks[1] as js.JsObject?;
+          }
+          debugPrint('AgoraWeb: Tracks created via agoraCreateTracks: audio=$_localAudioTrack, video=$_localVideoTrack');
+        } else {
+          final AgoraRTC = js.context['AgoraRTC'];
+          _localAudioTrack = await _promiseToFuture(
+            AgoraRTC.callMethod('createMicrophoneAudioTrack', [])
+          );
+          if (enableVideo) {
+            _localVideoTrack = await _promiseToFuture(
+              AgoraRTC.callMethod('createCameraVideoTrack', [])
+            );
+          }
+        }
+      } catch (e) {
+        debugPrint('AgoraWeb: Track creation error - $e');
       }
 
       // Join the channel
@@ -169,21 +192,31 @@ class AgoraWebClient {
       );
       debugPrint('AgoraWeb: Joined channel successfully');
 
-      // Publish local tracks
-      final tracks = <js.JsObject>[_localAudioTrack!];
-      if (_localVideoTrack != null) {
-        tracks.add(_localVideoTrack!);
+      // Publish local tracks via native JS helper
+      try {
+        final helperPublish = js.context['agoraPublishTracks'];
+        if (helperPublish != null) {
+          await _promiseToFuture(
+            js.context.callMethod('agoraPublishTracks', [_client, _localAudioTrack, _localVideoTrack])
+          );
+          debugPrint('AgoraWeb: Published tracks via agoraPublishTracks helper');
+        } else {
+          final tracksToPublish = <js.JsObject>[];
+          if (_localAudioTrack != null) tracksToPublish.add(_localAudioTrack!);
+          if (_localVideoTrack != null) tracksToPublish.add(_localVideoTrack!);
+          if (tracksToPublish.isNotEmpty) {
+            await _promiseToFuture(
+              _client!.callMethod('publish', [js.JsArray.from(tracksToPublish)])
+            );
+          }
+        }
+      } catch (e) {
+        debugPrint('AgoraWeb: Publish error - $e');
       }
-
-      await _promiseToFuture(
-        _client!.callMethod('publish', [js.JsArray.from(tracks)])
-      );
-      debugPrint('AgoraWeb: Published local tracks');
 
       // Play local video in a container
       if (_localVideoTrack != null) {
         _playLocalVideo();
-        // Show local video container
         final localContainer = html.querySelector('#local-video-container');
         if (localContainer != null) {
           localContainer.style.display = 'block';
@@ -200,14 +233,32 @@ class AgoraWebClient {
     try {
       debugPrint('AgoraWeb: Subscribing to user ${user['uid']}, mediaType: $mediaType');
       
-      await _promiseToFuture(
+      final helperPlay = js.context['agoraPlayRemoteTrack'];
+      if (helperPlay != null) {
+        final containerId = mediaType == 'video' ? 'remote-video-container' : null;
+        if (mediaType == 'video') {
+          var container = html.querySelector('#remote-video-container');
+          if (container == null) {
+            _createVideoContainers();
+            container = html.querySelector('#remote-video-container');
+          }
+          if (container != null) container.style.display = 'block';
+        }
+        await _promiseToFuture(
+          js.context.callMethod('agoraPlayRemoteTrack', [_client, user, mediaType, containerId])
+        );
+        debugPrint('AgoraWeb: Remote $mediaType track played via agoraPlayRemoteTrack helper');
+        return;
+      }
+
+      final subscribedTrack = await _promiseToFuture(
         _client!.callMethod('subscribe', [user, mediaType])
       );
       debugPrint('AgoraWeb: Subscribe successful for mediaType: $mediaType');
 
       if (mediaType == 'video') {
         // Try multiple ways to access the video track
-        var remoteVideoTrack = user['videoTrack'];
+        var remoteVideoTrack = subscribedTrack ?? user['videoTrack'];
         
         // If property access fails, try as a getter method
         if (remoteVideoTrack == null) {
@@ -271,20 +322,36 @@ class AgoraWebClient {
           debugPrint('AgoraWeb: Remote video track is null');
         }
       } else if (mediaType == 'audio') {
-        // Get the remote audio track via property access
-        final remoteAudioTrack = user['audioTrack'];
+        // Get the remote audio track via subscribe result or property access
+        var remoteAudioTrack = subscribedTrack ?? user['audioTrack'];
+        if (remoteAudioTrack == null) {
+          try {
+            remoteAudioTrack = js.JsObject.fromBrowserObject(user)['audioTrack'];
+          } catch (_) {}
+        }
         debugPrint('AgoraWeb: Remote audio track: $remoteAudioTrack');
         
-        if (remoteAudioTrack != null && remoteAudioTrack is js.JsObject) {
-          // Play audio (no container needed for audio)
+        if (remoteAudioTrack != null) {
           try {
-            remoteAudioTrack.callMethod('play', []);
+            try {
+              if (remoteAudioTrack is js.JsObject) {
+                remoteAudioTrack.callMethod('setVolume', [100]);
+              } else {
+                js.JsObject.fromBrowserObject(remoteAudioTrack).callMethod('setVolume', [100]);
+              }
+            } catch (_) {}
+
+            if (remoteAudioTrack is js.JsObject) {
+              remoteAudioTrack.callMethod('play', []);
+            } else {
+              js.JsObject.fromBrowserObject(remoteAudioTrack).callMethod('play', []);
+            }
             debugPrint('AgoraWeb: Playing remote audio successfully');
           } catch (e) {
             debugPrint('AgoraWeb: Error playing audio: $e');
           }
         } else {
-          debugPrint('AgoraWeb: Remote audio track is null or invalid type: ${remoteAudioTrack?.runtimeType}');
+          debugPrint('AgoraWeb: Remote audio track is null or invalid');
         }
       }
     } catch (e, stackTrace) {

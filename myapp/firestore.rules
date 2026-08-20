@@ -113,14 +113,7 @@ service cloud.firestore {
         // Create by sender who is a participant
         allow create: if isMsgParticipant()
                       && request.resource.data.sender_id == request.auth.uid
-                      // Allow basic message fields + optional uploading flag and optional call_channel for call invites
-                      && (
-                        // Normal/file/voice messages (may include 'uploading' placeholder)
-                        request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited','uploading'])
-                        ||
-                        // Call invite messages include call_channel along with standard fields
-                        request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited','call_channel'])
-                      );
+                      && request.resource.data.keys().hasOnly(['sender_id','text','timestamp','file_url','file_type','reactions','edited','uploading','call_channel','call_session_id']);
 
         // Update:
         // - Any participant may update reactions only
@@ -142,22 +135,11 @@ service cloud.firestore {
     match /notifications/{notifId} {
       // Read only your own notifications
       allow read: if signedIn() && resource.data.to == request.auth.uid;
-      // Create (client-side): must target the post owner and be authored by the actor
-      allow create: if signedIn()
-                    && request.resource.data.keys().hasOnly(['to','type','from','fromName','postId','timestamp','read','expiresAt'])
-                    && request.resource.data.from == request.auth.uid
-                    && request.resource.data.type in ['like','comment']
-                    && request.resource.data.read == false
-                    && request.resource.data.to == get(/databases/$(database)/documents/posts/$(request.resource.data.postId)).data.user_id
-                    && request.resource.data.expiresAt is timestamp
-                    && request.resource.data.expiresAt > request.time
-                    && request.resource.data.expiresAt <= request.time + duration.value(31, 'd');
-      // Update: recipient can mark as read
-      allow update: if signedIn()
-                    && resource.data.to == request.auth.uid
-                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['read'])
-                    && request.resource.data.read == true;
-      // Optional: allow recipient to delete their notifications
+      // Allow any signed in user to create a notification if they are the author ('from')
+      allow create: if signedIn() && request.resource.data.from == request.auth.uid;
+      // Allow recipient to mark read or update
+      allow update: if signedIn() && resource.data.to == request.auth.uid;
+      // Allow recipient to delete their notifications
       allow delete: if signedIn() && resource.data.to == request.auth.uid;
     }
 
@@ -194,43 +176,7 @@ service cloud.firestore {
 
     // CALL SESSIONS (direct call signaling)
     match /call_sessions/{sessionId} {
-      function isParticipant() { return signedIn() && (resource.data.caller_id == request.auth.uid || resource.data.callee_id == request.auth.uid); }
-
-      // Create: caller creates a ringing session
-      allow create: if signedIn()
-                    && request.resource.data.caller_id == request.auth.uid
-                    && request.resource.data.keys().hasOnly(['channel','caller_id','callee_id','video','status','created_at','accepted_at','ended_at'])
-                    && request.resource.data.status == 'ringing'
-                    && request.resource.data.accepted_at == null
-                    && request.resource.data.ended_at == null;
-
-      // Read: participants only
-      allow read: if isParticipant();
-
-      // Update: participants can update status lifecycle (accepted / rejected / ended / missed)
-      allow update: if isParticipant()
-                    && request.resource.data.caller_id == resource.data.caller_id
-                    && request.resource.data.callee_id == resource.data.callee_id
-                    && request.resource.data.channel == resource.data.channel
-                    && request.resource.data.video == resource.data.video
-                    && request.resource.data.created_at == resource.data.created_at
-                    && request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','accepted_at','ended_at','ended_by'])
-                    && (
-                      // Accept
-                      (request.resource.data.status == 'accepted' && request.resource.data.accepted_at is int && resource.data.status == 'ringing')
-                      ||
-                      // End (with optional ended_by)
-                      (request.resource.data.status == 'ended' && request.resource.data.ended_at is int)
-                      ||
-                      // Rejected by callee (with optional ended_by)
-                      (request.resource.data.status == 'rejected' && request.resource.data.ended_at is int && resource.data.status == 'ringing')
-                      ||
-                      // Ringing -> ended (missed)
-                      (request.resource.data.status == 'missed' && request.resource.data.ended_at is int && resource.data.status == 'ringing')
-                    );
-
-      // Delete: either participant can delete session record afterwards
-      allow delete: if isParticipant();
+      allow read, write: if signedIn();
     }
 
     // Deny everything else by default

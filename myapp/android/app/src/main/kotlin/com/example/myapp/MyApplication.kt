@@ -1,51 +1,74 @@
 package com.example.myapp
 
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.embedding.engine.FlutterEngineCache
-import io.flutter.embedding.engine.dart.DartExecutor
-import io.flutter.plugins.GeneratedPluginRegistrant
 
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        // Ensure the default FCM channel exists even when app is not running
+        initNotificationChannels()
+        try {
+            MessageWatcherService.start(this)
+        } catch (_: Throwable) {}
+    }
+
+    private fun initNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
-                val nm = getSystemService(NotificationManager::class.java)
-                val channelId = "messages"
-                if (nm.getNotificationChannel(channelId) == null) {
-                    val ch = NotificationChannel(
-                        channelId,
-                        "Messages",
-                        NotificationManager.IMPORTANCE_HIGH
-                    )
-                    nm.createNotificationChannel(ch)
+                val nm = getSystemService(NotificationManager::class.java) ?: return
+
+                // 1. Calls channel (Ringtone sound, continuous vibration, max priority)
+                val callSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val callAudioAttributes = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .build()
+
+                val callsChannel = NotificationChannel("calls", "Incoming Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Incoming call ringing and alerts"
+                    setSound(callSoundUri, callAudioAttributes)
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 1000, 1000, 1000)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    setBypassDnd(true)
                 }
+                nm.createNotificationChannel(callsChannel)
+
+                // 2. Messages popup channel (Notification sound, vibration)
+                val msgSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val msgAudioAttributes = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .build()
+
+                val messagesPopup = NotificationChannel("messages_popup_v2", "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Message popup notifications with sound"
+                    setSound(msgSoundUri, msgAudioAttributes)
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 250, 200, 250)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    setShowBadge(true)
+                    setBypassDnd(true)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) messagesPopup.setAllowBubbles(true)
+                nm.createNotificationChannel(messagesPopup)
+
+                // 3. Default messages channel
+                val messagesDefault = NotificationChannel("messages", "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Incoming messages"
+                    setSound(msgSoundUri, msgAudioAttributes)
+                    enableVibration(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    setShowBadge(true)
+                }
+                nm.createNotificationChannel(messagesDefault)
+
             } catch (_: Throwable) {}
-        }
-        try {
-            // If an engine is already cached, don't create another
-            val cache = FlutterEngineCache.getInstance()
-            val existing = cache.get("warm_engine")
-            if (existing == null) {
-                val engine = FlutterEngine(this)
-                // Plugins will be auto-registered by Flutter when activity attaches if needed.
-                // Avoid manual double registration; GeneratedPluginRegistrant is optional with new embedding.
-                try {
-                    GeneratedPluginRegistrant.registerWith(engine)
-                } catch (_: Throwable) {}
-            // Start Dart isolate now so it's warm when Activity attaches
-                engine.dartExecutor.executeDartEntrypoint(
-                    DartExecutor.DartEntrypoint.createDefault()
-                )
-                cache.put("warm_engine", engine)
-            }
-        } catch (_: Throwable) {
-            // Best-effort; app still works without cached engine
         }
     }
 }

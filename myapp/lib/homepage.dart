@@ -21,6 +21,7 @@ import 'supabase.dart' as sb;
 import 'app_cache_manager.dart';
 import 'background_tasks.dart';
 import 'theme_controller.dart';
+import 'cv_generator_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -80,13 +81,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
   @override
   void initState() {
     super.initState();
-    try {
-      _firestore.settings = const Settings(persistenceEnabled: true);
-    } catch (_) {
-      try {
-        _firestore.settings = const Settings(persistenceEnabled: false);
-      } catch (_) {}
-    }
     _checkConnectivity();
     _fetchUserData();
     _setupUserListener();
@@ -520,12 +514,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
         final postData = postSnap.data();
         final String? to = (postData?['user_id']) as String?;
         if (to != null && to.isNotEmpty && to != user.uid) {
+          final fromImg = (userData?['profile_image'] ?? user.photoURL ?? '') as String;
+          final fromName = (userData?['name'] ?? user.displayName ?? 'Someone') as String;
           await _firestore.collection('notifications').add({
             'to': to,
             'type': 'comment',
             'from': user.uid,
-            'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+            'fromName': fromName,
+            'fromImage': fromImg,
             'postId': postId,
+            'commentText': controller.text,
+            'text': '$fromName commented on your post',
             'timestamp': timestamp,
             'read': false,
             'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
@@ -620,6 +619,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
         final postSnap = await tx.get(postRef);
         if (!postSnap.exists) return;
 
+        final postData = postSnap.data();
+        final String? to = postData?['user_id'] as String?;
+        final fromImg = (userData?['profile_image'] ?? user.photoURL ?? '') as String;
+        final String fromName = (userData?['name'] ?? user.displayName ?? 'Someone') as String;
+
         if (likeSnap.exists) {
           final prev = likeSnap.data();
           final String prevReaction = (prev?['reaction'] ?? '') as String;
@@ -629,12 +633,30 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
             tx.update(postRef, {'likes_count': FieldValue.increment(-1)});
             result = 'unlike';
           } else {
-            // Reaction change only
+            // Reaction change
             tx.update(likeRef, {
               'reaction': reaction,
               'timestamp': DateTime.now().millisecondsSinceEpoch,
             });
             result = 'reactionChange';
+
+            // Create notification on reaction change
+            if (to != null && to.isNotEmpty && to != user.uid) {
+              final notifRef = _firestore.collection('notifications').doc();
+              tx.set(notifRef, {
+                'to': to,
+                'type': 'like',
+                'reaction': reaction,
+                'from': user.uid,
+                'fromName': fromName,
+                'fromImage': fromImg,
+                'postId': postId,
+                'text': '$fromName reacted $reaction to your post',
+                'timestamp': DateTime.now().millisecondsSinceEpoch,
+                'read': false,
+                'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+              });
+            }
           }
         } else {
           // First-like
@@ -645,17 +667,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
           tx.update(postRef, {'likes_count': FieldValue.increment(1)});
           result = 'firstLike';
 
-          // Create notification doc inside the transaction
-          final postData = postSnap.data();
-          final String? to = postData?['user_id'] as String?;
           if (to != null && to.isNotEmpty && to != user.uid) {
             final notifRef = _firestore.collection('notifications').doc();
             tx.set(notifRef, {
               'to': to,
               'type': 'like',
+              'reaction': reaction,
               'from': user.uid,
-              'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+              'fromName': fromName,
+              'fromImage': fromImg,
               'postId': postId,
+              'text': '$fromName reacted $reaction to your post',
               'timestamp': DateTime.now().millisecondsSinceEpoch,
               'read': false,
               'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
@@ -1271,8 +1293,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
     return Scaffold(
       appBar: AppBar(
         title: const Text('User Profile'),
-        backgroundColor: Colors.blue,
+        flexibleSpace: Container(
+          decoration: BoxDecoration(
+            gradient: ThemeController.instance.appBarGradient,
+          ),
+        ),
+        backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
+        elevation: 0,
       ),
       drawer: Drawer(
         child: SafeArea(
@@ -1291,7 +1319,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                       ? const Icon(Icons.person, color: Colors.grey)
                       : null,
                 ),
-                decoration: const BoxDecoration(color: Colors.blue),
+                decoration: BoxDecoration(
+                  gradient: ThemeController.instance.appBarGradient,
+                ),
               ),
               SwitchListTile(
                 secondary: const Icon(Icons.dark_mode),
@@ -1301,19 +1331,58 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
               ),
               ExpansionTile(
                 leading: const Icon(Icons.color_lens),
-                title: const Text('Theme Colors'),
+                title: const Text('Theme Colors (10 Themes)'),
+                initiallyExpanded: false,
                 children: [
-                  ...ThemeController.instance.availableSeedKeys.map((key) {
-                    final selected = ThemeController.instance.seedKey == key;
-                    final color = ThemeController.instance.colorFor(key);
+                  ...ThemeController.allThemes.map((theme) {
+                    final selected = ThemeController.instance.seedKey == theme.key;
                     return ListTile(
-                      leading: CircleAvatar(backgroundColor: color),
-                      title: Text(ThemeController.instance.displayName(key)),
-                      trailing: selected ? const Icon(Icons.check, color: Colors.green) : null,
-                      onTap: () => ThemeController.instance.setSeed(key),
+                      leading: Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: theme.gradient,
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          border: Border.all(
+                            color: selected ? Colors.white : Colors.transparent,
+                            width: 2,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: theme.primary.withOpacity(0.3),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                      ),
+                      title: Text(
+                        theme.name,
+                        style: TextStyle(
+                          fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                          color: selected ? theme.primary : null,
+                        ),
+                      ),
+                      trailing: selected ? Icon(Icons.check_circle, color: theme.primary) : null,
+                      onTap: () => ThemeController.instance.setSeed(theme.key),
                     );
                   }),
                 ],
+              ),
+              ListTile(
+                leading: const Icon(Icons.description),
+                title: const Text('CV Generator'),
+                onTap: () {
+                  Navigator.of(context).pop(); // close drawer first
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => CVGeneratorPage(userData: userData)),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.logout),
@@ -1360,12 +1429,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: Colors.blue,
+                                color: ThemeController.instance.primaryColor,
                                 width: 4.0,
                               ),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.blue.withOpacity(0.3),
+                                  color: ThemeController.instance.primaryColor.withOpacity(0.3),
                                   blurRadius: 10,
                                   spreadRadius: 2,
                                   offset: const Offset(0, 4),
@@ -1444,7 +1513,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                                 icon: const Icon(Icons.note, size: 18),
                                 label: const Text('Notebook'),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue,
+                                  backgroundColor: ThemeController.instance.primaryColor,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(15.0),
+                                  ),
+                                ),
+                              ),
+
+                              ElevatedButton.icon(
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => CVGeneratorPage(userData: userData)),
+                                  );
+                                },
+                                icon: const Icon(Icons.description, size: 18),
+                                label: const Text('CV'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF8E24AA),
                                   foregroundColor: Colors.white,
                                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                                   shape: RoundedRectangleBorder(
@@ -1458,7 +1546,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                                 icon: const Icon(Icons.camera_alt, size: 18),
                                 label: const Text('Photo'),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue,
+                                  backgroundColor: ThemeController.instance.primaryColor,
                                   foregroundColor: Colors.white,
                                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                                   shape: RoundedRectangleBorder(

@@ -75,15 +75,14 @@ void main() {
       }
     }
 
-    // Ensure Firestore disk persistence is enabled app-wide for offline cache.
-    // On some web environments (incognito, blocked storage), enabling persistence can throw.
-    try {
-      FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
-    } catch (_) {
-      // Fallback: disable persistence if not supported to prevent startup crash/blank page
+    if (kIsWeb) {
       try {
-        FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: false);
-      } catch (_) {}
+        FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
+      } catch (_) {
+        try {
+          FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: false);
+        } catch (_) {}
+      }
     }
 
     // Initialize Supabase
@@ -93,9 +92,14 @@ void main() {
 
     // Push notifications setup
     if (!kIsWeb) {
-      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-      // Initialize notification service
-      await NotificationService.instance.initialize();
+      try {
+        FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+        // Initialize notification service
+        await NotificationService.instance.initialize();
+      } catch (e) {
+        debugPrint('Notification init error: $e');
+      }
+
       // Save FCM token ASAP if user is already signed in
       try {
         final u = firebase_auth.FirebaseAuth.instance.currentUser;
@@ -106,20 +110,33 @@ void main() {
           }, SetOptions(merge: true));
         }
       } catch (_) {}
-      await _setupPushNotifications();
+
+      try {
+        await _setupPushNotifications();
+      } catch (e) {
+        debugPrint('Push setup error: $e');
+      }
     }
 
-  // Load persisted theme before starting UI
-  await ThemeController.instance.init();
+    // Load persisted theme before starting UI
+    try {
+      await ThemeController.instance.init();
+    } catch (e) {
+      debugPrint('Theme init error: $e');
+    }
 
-  // Start the app UI ASAP
+    // Start the app UI ASAP
     // ignore: avoid_print
     print('main: calling runApp');
-    // Initialize background tasks (Android): periodic flush of pending actions
-    await BackgroundTasks.initialize();
-    // Start connectivity watcher (toggles Firestore network and flushes queues)
-    await ConnectivityService.instance.initialize();
     runApp(const MyApp());
+
+    // Initialize background tasks & connectivity safely after UI start
+    try {
+      await BackgroundTasks.initialize();
+    } catch (_) {}
+    try {
+      await ConnectivityService.instance.initialize();
+    } catch (_) {}
 
     // Web: request permission and get token with VAPID key (deferred; don't block startup)
     if (kIsWeb) {
@@ -151,60 +168,64 @@ final FlutterLocalNotificationsPlugin _flnp = FlutterLocalNotificationsPlugin();
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Ensure Firebase is initialized in background isolate
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  
-  // Initialize notification service
-  await NotificationService.instance.initialize();
-  
-  final data = message.data;
-  final notification = message.notification;
-  final type = data['type'] ?? 'message';
-  
-  debugPrint('=== Background FCM Message Received ===');
-  debugPrint('Type: $type');
-  debugPrint('Data: $data');
-  
-  if (type == 'call_invite') {
-    // Incoming call - show full screen notification with ringtone
-    final callerId = data['caller_id'] ?? '';
-    final callerName = data['caller_name'] ?? 'Unknown';
-    final channel = data['call_channel'] ?? '';
-    final isVideo = data['video'] == '1';
-    final sessionId = data['call_session_id'] ?? '';
+  try {
+    // Ensure Firebase is initialized in background isolate
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     
-    debugPrint('Call from: $callerName, channel: $channel');
+    // Initialize notification service
+    await NotificationService.instance.initialize();
     
-    if (callerId.isNotEmpty && channel.isNotEmpty) {
-      await NotificationService.instance.showCallNotification(
-        conversationId: '',
-        otherUserId: callerId,
-        callerName: callerName,
-        channelName: channel,
-        isVideo: isVideo,
-        sessionId: sessionId,
-      );
-    }
-  } else {
-    // Regular message - show notification with sound
-    final convId = data['conversationId'] ?? '';
-    final otherId = data['otherUserId'] ?? '';
-    final title = notification?.title ?? data['senderName'] ?? 'New message';
-    final body = notification?.body ?? 'You have a new message';
+    final data = message.data;
+    final notification = message.notification;
+    final type = data['type']?.toString() ?? 'message';
     
-    debugPrint('Message from: $title, convId: $convId');
+    debugPrint('=== Background FCM Message Received ===');
+    debugPrint('Type: $type');
+    debugPrint('Data: $data');
     
-    if (convId.isNotEmpty) {
-      // Play sound in background
-      await NotificationService.instance.playMessageSound();
+    if (type == 'call_invite') {
+      // Incoming call - show full screen notification with ringtone
+      final callerId = data['caller_id']?.toString() ?? '';
+      final callerName = data['caller_name']?.toString() ?? 'Unknown';
+      final channel = data['call_channel']?.toString() ?? '';
+      final isVideo = data['video']?.toString() == '1' || data['video'] == true;
+      final sessionId = data['call_session_id']?.toString() ?? '';
       
-      await NotificationService.instance.showMessageNotification(
-        conversationId: convId,
-        otherUserId: otherId,
-        title: title,
-        body: body,
-      );
+      debugPrint('Call from: $callerName, channel: $channel');
+      
+      if (callerId.isNotEmpty && channel.isNotEmpty) {
+        await NotificationService.instance.showCallNotification(
+          conversationId: '',
+          otherUserId: callerId,
+          callerName: callerName,
+          channelName: channel,
+          isVideo: isVideo,
+          sessionId: sessionId,
+        );
+      }
+    } else {
+      // Regular message - show notification with sound
+      final convId = data['conversationId']?.toString() ?? '';
+      final otherId = data['otherUserId']?.toString() ?? '';
+      final title = notification?.title ?? data['senderName']?.toString() ?? 'New message';
+      final body = notification?.body ?? data['text']?.toString() ?? 'You have a new message';
+      
+      debugPrint('Message from: $title, convId: $convId');
+      
+      if (convId.isNotEmpty) {
+        // Play sound in background
+        await NotificationService.instance.playMessageSound();
+        
+        await NotificationService.instance.showMessageNotification(
+          conversationId: convId,
+          otherUserId: otherId,
+          title: title,
+          body: body,
+        );
+      }
     }
+  } catch (e, stack) {
+    debugPrint('Error in _firebaseMessagingBackgroundHandler: $e\n$stack');
   }
   debugPrint('=== Background handler complete ===');
 }
@@ -310,7 +331,7 @@ Future<void> _setupPushNotifications() async {
   });
 
   // Taps: app in background
-  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
     final data = message.data;
     final type = data['type'] ?? 'message';
     
@@ -322,6 +343,20 @@ Future<void> _setupPushNotifications() async {
       final sessionId = data['call_session_id'] ?? '';
       
       if (channel.isNotEmpty && callerId.isNotEmpty) {
+        if (sessionId.isNotEmpty) {
+          try {
+            final doc = await FirebaseFirestore.instance.collection('call_sessions').doc(sessionId).get();
+            if (!doc.exists) return;
+            final status = doc.data()?['status'];
+            if (status != 'ringing' && status != 'accepted') return;
+            if (status == 'ringing') {
+              await doc.reference.update({
+                'status': 'accepted',
+                'accepted_at': DateTime.now().millisecondsSinceEpoch,
+              });
+            }
+          } catch (_) {}
+        }
         final ctx = _MyAppNavigator.navigatorKey.currentContext;
         if (ctx != null) {
           Navigator.of(ctx).push(
@@ -330,6 +365,7 @@ Future<void> _setupPushNotifications() async {
               video: isVideo,
               remoteUserId: callerId,
               callSessionId: sessionId,
+              isCaller: false,
             ),
           );
           _clearBadgeNative();
@@ -360,7 +396,21 @@ Future<void> _setupPushNotifications() async {
       final sessionId = data['call_session_id'] ?? '';
       
       if (channel.isNotEmpty && callerId.isNotEmpty) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (sessionId.isNotEmpty) {
+            try {
+              final doc = await FirebaseFirestore.instance.collection('call_sessions').doc(sessionId).get();
+              if (!doc.exists) return;
+              final status = doc.data()?['status'];
+              if (status != 'ringing' && status != 'accepted') return;
+              if (status == 'ringing') {
+                await doc.reference.update({
+                  'status': 'accepted',
+                  'accepted_at': DateTime.now().millisecondsSinceEpoch,
+                });
+              }
+            } catch (_) {}
+          }
           final ctx = _MyAppNavigator.navigatorKey.currentContext;
           if (ctx != null) {
             Navigator.of(ctx).push(
@@ -369,6 +419,7 @@ Future<void> _setupPushNotifications() async {
                 video: isVideo,
                 remoteUserId: callerId,
                 callSessionId: sessionId,
+                isCaller: false,
               ),
             );
             _clearBadgeNative();
@@ -389,7 +440,7 @@ Future<void> _setupPushNotifications() async {
   }
 }
 
-void _onNotificationTap(String payload) {
+void _onNotificationTap(String payload) async {
   if (payload.isEmpty) return;
   // Parse payload
   try {
@@ -402,6 +453,20 @@ void _onNotificationTap(String payload) {
       final sessionId = m['sessionId'] ?? '';
       
       if (channel.isNotEmpty && otherId.isNotEmpty) {
+        if (sessionId.isNotEmpty) {
+          try {
+            final doc = await FirebaseFirestore.instance.collection('call_sessions').doc(sessionId).get();
+            if (!doc.exists) return;
+            final status = doc.data()?['status'];
+            if (status != 'ringing' && status != 'accepted') return;
+            if (status == 'ringing') {
+              await doc.reference.update({
+                'status': 'accepted',
+                'accepted_at': DateTime.now().millisecondsSinceEpoch,
+              });
+            }
+          } catch (_) {}
+        }
         final ctx = _MyAppNavigator.navigatorKey.currentContext;
         if (ctx != null) {
           Navigator.of(ctx).push(
@@ -410,6 +475,7 @@ void _onNotificationTap(String payload) {
               video: isVideo,
               remoteUserId: otherId,
               callSessionId: sessionId,
+              isCaller: false,
             ),
           );
           _clearBadgeNative();
@@ -577,6 +643,11 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     } catch (_) {}
     // Start periodic presence update (every 2 minutes to keep online status fresh)
     _startPresenceHeartbeat();
+    final initialU = firebase_auth.FirebaseAuth.instance.currentUser;
+    if (initialU != null) {
+      _attachCallSessionListener(initialU.uid);
+      NotificationService.instance.startRealtimeNotificationListener(initialU.uid);
+    }
     // Ensure token is saved as soon as user signs in
     _authSub = firebase_auth.FirebaseAuth.instance.authStateChanges().listen((u) async {
       final prefs = await SharedPreferences.getInstance();
@@ -588,6 +659,10 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         try { await FirebaseMessaging.instance.subscribeToTopic(topic); } catch (_) {}
         await prefs.setString('last_topic_uid', u.uid);
         _attachCallSessionListener(u.uid);
+        // Start real-time Firestore notification alerts for Android device
+        NotificationService.instance.startRealtimeNotificationListener(u.uid);
+        // Start background message watcher for closed/background notifications
+        if (!kIsWeb) _startMessageWatcher();
         // Set user as online when authenticated
         _updateUserPresence(isOnline: true);
       } else {
@@ -599,6 +674,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         // Stop background watcher if running
         _stopMessageWatcher();
         _detachCallSessionListener();
+        NotificationService.instance.stopRealtimeNotificationListener();
         // Set user as offline when signed out
         _updateUserPresence(isOnline: false);
       }
@@ -614,33 +690,63 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         }
       } else if (call.method == 'openCall') {
         final args = Map<String, dynamic>.from(call.arguments as Map);
-        final channel = args['channel'] as String?;
-        final callerId = args['callerId'] as String?;
-        final video = (args['video'] as bool?) ?? false;
-        final sessionId = args['sessionId'] as String?;
-        if (channel != null && channel.isNotEmpty && callerId != null && callerId.isNotEmpty) {
-          try {
-            // Try to find existing session id by querying call_sessions
-            String? sess = sessionId;
-            if (sess == null) {
-              try {
-                final snap = await FirebaseFirestore.instance
-                    .collection('call_sessions')
-                    .where('channel', isEqualTo: channel)
-                    .where('caller_id', isEqualTo: callerId)
-                    .limit(1)
-                    .get();
-                if (snap.docs.isNotEmpty) sess = snap.docs.first.id;
-              } catch (_) {}
-            }
-            final convId = await _findConversationWith(callerId);
-            _MyAppNavigator.navigatorKey.currentState?.push(
-              CallPage.route(channelName: channel, video: video, conversationId: convId, remoteUserId: callerId, callSessionId: sess),
-            );
-          } catch (_) {}
-        }
+        _handleOpenCall(args);
       }
     });
+
+    // Check if app was launched via call/conversation notification
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkPendingNativeNavigation();
+    });
+  }
+
+  void _handleOpenCall(Map<String, dynamic> args) {
+    final channel = args['channel'] as String?;
+    final callerId = args['callerId'] as String?;
+    final video = (args['video'] as bool?) ?? false;
+    final sessionId = args['sessionId'] as String?;
+    if (channel != null && channel.isNotEmpty && callerId != null && callerId.isNotEmpty) {
+      try { NotificationService.instance.stopCallRingtone(); } catch (_) {}
+      
+      int retryCount = 0;
+      void pushCall() {
+        final nav = _MyAppNavigator.navigatorKey.currentState;
+        if (nav != null) {
+          nav.push(
+            CallPage.route(
+              channelName: channel,
+              video: video,
+              remoteUserId: callerId,
+              callSessionId: (sessionId != null && sessionId.isNotEmpty) ? sessionId : null,
+              isCaller: false,
+            ),
+          );
+        } else if (retryCount < 25) {
+          retryCount++;
+          // If navigator is still initializing on cold boot, retry every 120ms
+          Future.delayed(const Duration(milliseconds: 120), pushCall);
+        }
+      }
+
+      pushCall();
+    }
+  }
+
+  Future<void> _checkPendingNativeNavigation() async {
+    try {
+      final callData = await _navChannel.invokeMethod('getPendingCall');
+      if (callData is Map) {
+        _handleOpenCall(Map<String, dynamic>.from(callData));
+      }
+    } catch (_) {}
+
+    try {
+      final convId = await _navChannel.invokeMethod('getPendingConv');
+      if (convId is String && convId.isNotEmpty) {
+        _navigateToConversation(convId, '');
+        _clearBadgeNative();
+      }
+    } catch (_) {}
   }
 
   Future<void> _ensureFcmTokenSaved() async {
@@ -684,7 +790,7 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
         _startMessageWatcher();
         _updateUserPresence(isOnline: false);
       } else if (state == AppLifecycleState.resumed) {
-        _stopMessageWatcher();
+        _startMessageWatcher();
         _updateUserPresence(isOnline: true);
       }
     } else {
@@ -730,19 +836,41 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
     _callSessionSub = FirebaseFirestore.instance
         .collection('call_sessions')
         .where('callee_id', isEqualTo: uid)
-        .where('status', isEqualTo: 'ringing')
         .snapshots()
-        .listen((snap) {
-      debugPrint('Call session snapshot received: ${snap.docs.length} docs');
-      if (snap.docs.isEmpty) return;
+        .listen((snap) async {
+      debugPrint('Call session snapshot received: ${snap.docs.length} docs for callee $uid');
+      if (snap.docs.isEmpty) {
+        try { NotificationService.instance.stopCallRingtone(); } catch (_) {}
+        return;
+      }
+
+      bool hasRinging = false;
       for (final doc in snap.docs) {
         final data = doc.data();
+        final status = data['status'] as String? ?? '';
+        if (status != 'ringing') continue;
+
         final channel = data['channel'] as String? ?? '';
         final callerId = data['caller_id'] as String? ?? '';
         final video = data['video'] == true;
-        debugPrint('Incoming call detected - Channel: $channel, Caller: $callerId, Video: $video');
+
         if (channel.isEmpty || callerId.isEmpty) continue;
-        _showIncomingCallGlobal(doc.reference, callerId, channel, video);
+        hasRinging = true;
+        debugPrint('Incoming call ringing: caller=$callerId, channel=$channel, video=$video');
+
+        // Play receiver ringtone
+        try {
+          await NotificationService.instance.playCallRingtone(NotificationService.defaultCallRingtone);
+        } catch (_) {}
+
+        if (kIsWeb) {
+          // On Web, if user is active, navigate directly or prompt
+        }
+        break;
+      }
+
+      if (!hasRinging) {
+        try { NotificationService.instance.stopCallRingtone(); } catch (_) {}
       }
     }, onError: (error) {
       debugPrint('Call session listener error: $error');
@@ -752,210 +880,9 @@ class _MessagingInitializerState extends State<MessagingInitializer> with Widget
   void _detachCallSessionListener() {
     _callSessionSub?.cancel();
     _callSessionSub = null;
+    try { NotificationService.instance.stopCallRingtone(); } catch (_) {}
   }
 
-  bool _showingGlobalCall = false;
-  Future<void> _showIncomingCallGlobal(DocumentReference ref, String callerId, String channel, bool video) async {
-    if (_showingGlobalCall || !mounted) {
-      debugPrint('Skipping incoming call dialog - already showing or not mounted');
-      return;
-    }
-    _showingGlobalCall = true;
-    
-    debugPrint('=== Showing incoming call dialog ===');
-    debugPrint('Caller: $callerId, Channel: $channel, Video: $video');
-    
-    // Find conversation
-    final convId = await _findConversationWith(callerId);
-    debugPrint('Conversation ID: $convId');
-    
-    // Start playing constant ringtone
-    debugPrint('Starting call ringtone: ${NotificationService.defaultCallRingtone}');
-    try {
-      await NotificationService.instance.playCallRingtone(NotificationService.defaultCallRingtone);
-      debugPrint('Ringtone started successfully');
-    } catch (e) {
-      debugPrint('Error starting ringtone: $e');
-    }
-    
-    // Load caller profile
-    Map<String, dynamic>? user;
-    try {
-      final udoc = await FirebaseFirestore.instance.collection('users').doc(callerId).get();
-      if (udoc.exists) user = udoc.data();
-    } catch (_) {}
-    final name = user?['name'] ?? callerId;
-    final avatarUrl = user?['profile_image'];
-    
-    // Listen to call session changes to auto-close dialog if caller cancels
-    StreamSubscription<DocumentSnapshot>? dialogListener;
-    bool acceptedByUser = false; // Track if user pressed accept button
-    
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) {
-        // Start listening to call session status changes
-        dialogListener = ref.snapshots().listen((doc) async {
-          if (!doc.exists) {
-            // Document deleted - close dialog
-            if (!acceptedByUser) {
-              await NotificationService.instance.stopCallRingtone();
-            }
-            if (c.mounted) Navigator.pop(c);
-            return;
-          }
-          final data = doc.data() as Map<String, dynamic>?;
-          final status = data?['status'] as String?;
-          
-          debugPrint('Dialog listener - status: $status, acceptedByUser: $acceptedByUser');
-          
-          // If user already accepted, don't interfere - let the accept button handle everything
-          if (acceptedByUser) {
-            debugPrint('User already pressed accept button - listener doing nothing');
-            return;
-          }
-          
-          // Handle other status changes (rejected, ended, missed)
-          if (status != 'ringing' && status != 'accepted') {
-            debugPrint('Call status changed to $status - closing dialog and stopping ringtone');
-            try {
-              await NotificationService.instance.stopCallRingtone();
-            } catch (e) {
-              debugPrint('Error stopping ringtone in listener: $e');
-            }
-            if (c.mounted) Navigator.pop(c);
-          }
-        });
-        
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          backgroundColor: Colors.black87,
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircleAvatar(
-                  radius: 48,
-                  backgroundColor: Colors.blueGrey,
-                  backgroundImage: (avatarUrl is String && avatarUrl.isNotEmpty) ? NetworkImage(avatarUrl) : null,
-                  child: (avatarUrl is String && avatarUrl.isNotEmpty) ? null : Text(name[0].toUpperCase(), style: const TextStyle(fontSize: 32, color: Colors.white)),
-                ),
-                const SizedBox(height: 16),
-                Text('${video ? 'Video' : 'Audio'} call from', style: const TextStyle(color: Colors.white70)),
-                const SizedBox(height: 8),
-                Text(name, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                      onPressed: () async {
-                        // Mark that user declined
-                        acceptedByUser = false;
-                        
-                        // Stop ringtone
-                        debugPrint('Decline button pressed - stopping ringtone');
-                        try {
-                          await NotificationService.instance.stopCallRingtone();
-                          debugPrint('Ringtone stopped');
-                        } catch (e) {
-                          debugPrint('Error stopping ringtone: $e');
-                        }
-                        
-                        // Update status first
-                        try { 
-                          await ref.update({'status': 'rejected', 'ended_at': DateTime.now().millisecondsSinceEpoch}); 
-                        } catch (_) {}
-                        
-                        // Close dialog
-                        if (c.mounted) Navigator.pop(c);
-                      },
-                      icon: const Icon(Icons.call_end),
-                      label: const Text('Decline'),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                      onPressed: () async {
-                        debugPrint('=== ACCEPT BUTTON PRESSED ===');
-                        
-                        // Mark that user accepted the call
-                        acceptedByUser = true;
-                        
-                        // CRITICAL: Stop ringtone IMMEDIATELY before anything else
-                        debugPrint('Stopping receiver ringtone IMMEDIATELY');
-                        try {
-                          await NotificationService.instance.stopCallRingtone();
-                          debugPrint('✓ Receiver ringtone stopped successfully');
-                        } catch (e) {
-                          debugPrint('✗ Error stopping ringtone: $e');
-                        }
-                        
-                        // Update status to accepted BEFORE closing dialog
-                        debugPrint('Updating call status to accepted...');
-                        try { 
-                          await ref.update({
-                            'status': 'accepted', 
-                            'accepted_at': DateTime.now().millisecondsSinceEpoch
-                          }); 
-                          debugPrint('✓ Call status updated to accepted');
-                        } catch (e) {
-                          debugPrint('✗ Error updating call status: $e');
-                        }
-                        
-                        // Close dialog
-                        if (c.mounted) {
-                          Navigator.pop(c);
-                          debugPrint('✓ Dialog closed');
-                        }
-                        
-                        // Small delay for dialog animation
-                        await Future.delayed(const Duration(milliseconds: 100));
-                        
-                        // Navigate to call page
-                        debugPrint('Opening CallPage...');
-                        final navigator = _MyAppNavigator.navigatorKey.currentState;
-                        if (navigator != null) {
-                          navigator.push(CallPage.route(
-                            channelName: channel, 
-                            video: video, 
-                            conversationId: convId, 
-                            remoteUserId: callerId, 
-                            callSessionId: ref.id
-                          ));
-                          debugPrint('✓ Navigated to CallPage');
-                        } else {
-                          debugPrint('✗ Navigator is null!');
-                        }
-                      },
-                      icon: Icon(video ? Icons.videocam : Icons.call),
-                      label: const Text('Accept'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-    
-    // Clean up listener when dialog closes
-    debugPrint('Dialog closed - cleaning up listener and stopping ringtone');
-    await dialogListener?.cancel();
-    
-    // Always stop ringtone when dialog closes (safety net)
-    try {
-      await NotificationService.instance.stopCallRingtone();
-      debugPrint('Ringtone stopped after dialog close');
-    } catch (e) {
-      debugPrint('Error stopping ringtone after dialog close: $e');
-    }
-    
-    _showingGlobalCall = false;
-  }
 
   Future<String?> _findConversationWith(String otherId) async {
     final uid = firebase_auth.FirebaseAuth.instance.currentUser?.uid;

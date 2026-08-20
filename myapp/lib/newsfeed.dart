@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
@@ -22,6 +23,8 @@ import 'notifications.dart';
 import 'all_users_list.dart';
 import 'api_ai_page.dart';
 import 'job_search_page.dart';
+import 'cv_generator_page.dart';
+import 'theme_controller.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -83,7 +86,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
   @override
   void initState() {
     super.initState();
-    _firestore.settings = const Settings(persistenceEnabled: true);
     _checkConnectivity();
     _fetchUserData();
     _fetchInitialPosts();
@@ -761,15 +763,20 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       // Create a notification for the post owner (client-side) with a 30-day TTL
       try {
         final postSnap = await _firestore.collection('posts').doc(postId).get();
-  final postData = postSnap.data();
-  final String? to = (postData?['user_id']) as String?;
+        final postData = postSnap.data();
+        final String? to = (postData?['user_id']) as String?;
         if (to != null && to.isNotEmpty && to != user.uid) {
+          final fromImg = (userData?['profile_image'] ?? user.photoURL ?? '') as String;
+          final fromName = (userData?['name'] ?? user.displayName ?? 'Someone') as String;
           await _firestore.collection('notifications').add({
             'to': to,
             'type': 'comment',
             'from': user.uid,
-            'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+            'fromName': fromName,
+            'fromImage': fromImg,
             'postId': postId,
+            'commentText': controller.text,
+            'text': '$fromName commented on your post',
             'timestamp': timestamp,
             'read': false,
             'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
@@ -793,11 +800,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       });
     } catch (e) {
       print('Error adding comment: $e');
-      if (e is FirebaseException && e.code == 'permission-denied') {
-        // Handle silently
-      } else {
-        // Avoid toast
-      }
     }
   }
 
@@ -826,11 +828,6 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       });
     } catch (e) {
       print('Error updating comment: $e');
-      if (e is FirebaseException && e.code == 'permission-denied') {
-        // Handle silently
-      } else {
-        // Avoid toast
-      }
     }
   }
 
@@ -855,46 +852,66 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       });
     } catch (e) {
       print('Error deleting comment: $e');
-      if (e is FirebaseException && e.code == 'permission-denied') {
-        // Handle silently
-      } else {
-        // Avoid toast
-      }
     }
   }
 
   Future<void> _toggleLike(String postId, String reaction) async {
     try {
       final firebase_auth.User? user = _auth.currentUser;
-      if (user == null) return;
+      if (user == null) {
+        return;
+      }
       final postRef = _firestore.collection('posts').doc(postId);
       final likeRef = postRef.collection('likes').doc(user.uid);
 
-  String result = 'none';
+      String result = 'none';
       String newReaction = reaction;
       await _firestore.runTransaction((tx) async {
         final likeSnap = await tx.get(likeRef);
         final postSnap = await tx.get(postRef);
-        if (!postSnap.exists) return; // post deleted
+        if (!postSnap.exists) return;
+
+        final postData = postSnap.data();
+        final String? to = postData?['user_id'] as String?;
+        final fromImg = (userData?['profile_image'] ?? user.photoURL ?? '') as String;
+        final String fromName = (userData?['name'] ?? user.displayName ?? 'Someone') as String;
 
         if (likeSnap.exists) {
           final prev = likeSnap.data();
           final String prevReaction = (prev?['reaction'] ?? '') as String;
           if (prevReaction == reaction) {
-            // Unlike: delete like doc and decrement likes_count
+            // Unlike
             tx.delete(likeRef);
             tx.update(postRef, {'likes_count': FieldValue.increment(-1)});
             result = 'unlike';
           } else {
-            // Change reaction only
+            // Change reaction
             tx.update(likeRef, {
               'reaction': reaction,
               'timestamp': DateTime.now().millisecondsSinceEpoch,
             });
             result = 'reactionChange';
+
+            // Create/update notification on reaction change
+            if (to != null && to.isNotEmpty && to != user.uid) {
+              final notifRef = _firestore.collection('notifications').doc();
+              tx.set(notifRef, {
+                'to': to,
+                'type': 'like',
+                'reaction': reaction,
+                'from': user.uid,
+                'fromName': fromName,
+                'fromImage': fromImg,
+                'postId': postId,
+                'text': '$fromName reacted $reaction to your post',
+                'timestamp': DateTime.now().millisecondsSinceEpoch,
+                'read': false,
+                'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
+              });
+            }
           }
         } else {
-          // First-like: create like doc, increment likes_count, and create notification
+          // First-like
           tx.set(likeRef, {
             'reaction': reaction,
             'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -902,17 +919,17 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
           tx.update(postRef, {'likes_count': FieldValue.increment(1)});
           result = 'firstLike';
 
-          // Create notification inside the transaction (best-effort with a pre-made doc ref)
-          final postData = postSnap.data();
-          final String? to = postData?['user_id'] as String?;
           if (to != null && to.isNotEmpty && to != user.uid) {
             final notifRef = _firestore.collection('notifications').doc();
             tx.set(notifRef, {
               'to': to,
               'type': 'like',
+              'reaction': reaction,
               'from': user.uid,
-              'fromName': (userData?['name'] ?? user.displayName ?? '') as String,
+              'fromName': fromName,
+              'fromImage': fromImg,
               'postId': postId,
+              'text': '$fromName reacted $reaction to your post',
               'timestamp': DateTime.now().millisecondsSinceEpoch,
               'read': false,
               'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 30))),
@@ -1215,81 +1232,55 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
       canPop: true,
       child: Scaffold(
         appBar: AppBar(
-          backgroundColor: Colors.blue,
+          flexibleSpace: Container(
+            decoration: BoxDecoration(
+              gradient: ThemeController.instance.appBarGradient,
+            ),
+          ),
+          backgroundColor: Colors.transparent,
           foregroundColor: Colors.white,
-          toolbarHeight: 48,
-          actions: [
-            // AI Content Analyzer
-            IconButton(
-              tooltip: 'AI Analyzer',
-              icon: const Icon(Icons.auto_awesome),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ApiAiPage()),
-              ),
-            ),
-            // Job Search
-            IconButton(
-              tooltip: 'Job Search',
-              icon: const Icon(Icons.work_outline),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const JobSearchPage()),
-              ),
-            ),
-            // Notifications icon with unread badge
-            StreamBuilder<QuerySnapshot>(
-              stream: (_auth.currentUser == null)
-                  ? const Stream.empty()
-                  : _firestore
-                      .collection('notifications')
-                      .where('to', isEqualTo: _auth.currentUser?.uid ?? '')
-                      .where('read', isEqualTo: false)
-                      .snapshots(),
-              builder: (context, snap) {
-                final int unread = (snap.hasData) ? snap.data!.docs.length : 0;
-                return Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    IconButton(
-                      tooltip: 'Notifications',
-                      icon: const Icon(Icons.notifications_outlined),
-                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsPage())),
+          elevation: 0,
+          toolbarHeight: 52,
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF00E5FF), Color(0xFF7C4DFF)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF00E5FF).withOpacity(0.45),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
                     ),
-                    if (unread > 0)
-                      Positioned(
-                        right: 8,
-                        top: 8,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.red,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
-                          child: Text(
-                            unread > 99 ? '99+' : '$unread',
-                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      ),
                   ],
-                );
-              },
-            ),
-            IconButton(
-              tooltip: 'Toggle composer',
-              icon: Icon(_showComposer ? Icons.expand_less : Icons.expand_more),
-              onPressed: () => setState(() => _showComposer = !_showComposer),
-            ),
-            IconButton(
-              tooltip: 'All Users',
-              icon: const Icon(Icons.people_outline),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AllUsersListPage()),
+                  border: Border.all(color: Colors.white.withOpacity(0.7), width: 1.2),
+                ),
+                child: const Icon(Icons.hub_rounded, color: Colors.white, size: 17),
               ),
+              const SizedBox(width: 8),
+              const WaveAnimatedTitle(
+                text: 'Connectify',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            // Compose toggle
+            IconButton(
+              tooltip: _showComposer ? 'Hide composer' : 'Create post',
+              icon: Icon(_showComposer ? Icons.edit_note : Icons.edit_outlined),
+              onPressed: () => setState(() => _showComposer = !_showComposer),
             ),
             // Messages icon with unread conversations badge
             StreamBuilder<QuerySnapshot>(
@@ -1341,25 +1332,136 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                 );
               },
             ),
-            IconButton(
-              tooltip: 'Videos',
-              icon: const Icon(Icons.play_circle_outline),
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const VideosPage())),
+            // Notifications icon with unread badge
+            StreamBuilder<QuerySnapshot>(
+              stream: (_auth.currentUser == null)
+                  ? const Stream.empty()
+                  : _firestore
+                      .collection('notifications')
+                      .where('to', isEqualTo: _auth.currentUser?.uid ?? '')
+                      .where('read', isEqualTo: false)
+                      .snapshots(),
+              builder: (context, snap) {
+                final int unread = (snap.hasData) ? snap.data!.docs.length : 0;
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    IconButton(
+                      tooltip: 'Notifications',
+                      icon: const Icon(Icons.notifications_outlined),
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsPage())),
+                    ),
+                    if (unread > 0)
+                      Positioned(
+                        right: 8,
+                        top: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Text(
+                            unread > 99 ? '99+' : '$unread',
+                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
-            IconButton(
-              tooltip: 'Jobs',
-              icon: const Icon(Icons.work),
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const JobsPage())),
-            ),
+            const SizedBox(width: 4),
           ],
         ),
         body: Column(
           children: [
+            // Modern Quick-Access Feature Bar (Overflow-proof)
+            Container(
+              height: 52,
+              margin: const EdgeInsets.only(top: 8, bottom: 4),
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                children: [
+                  _buildQuickFeatureChip(
+                    title: 'CV Generator',
+                    icon: Icons.description_rounded,
+                    gradient: const [Color(0xFF8E24AA), Color(0xFF5E35B1)],
+                    badge: 'NEW',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => CVGeneratorPage(userData: userData)),
+                    ),
+                  ),
+                  _buildQuickFeatureChip(
+                    title: 'AI Analyzer',
+                    icon: Icons.auto_awesome,
+                    gradient: const [Color(0xFF00ACC1), Color(0xFF1E88E5)],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ApiAiPage()),
+                    ),
+                  ),
+                  _buildQuickFeatureChip(
+                    title: 'Job Search',
+                    icon: Icons.search_rounded,
+                    gradient: const [Color(0xFFFB8C00), Color(0xFFF4511E)],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const JobSearchPage()),
+                    ),
+                  ),
+                  _buildQuickFeatureChip(
+                    title: 'Videos',
+                    icon: Icons.play_circle_fill_rounded,
+                    gradient: const [Color(0xFFE53935), Color(0xFFD81B60)],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const VideosPage()),
+                    ),
+                  ),
+                  _buildQuickFeatureChip(
+                    title: 'Community',
+                    icon: Icons.people_alt_rounded,
+                    gradient: const [Color(0xFF00897B), Color(0xFF43A047)],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const AllUsersListPage()),
+                    ),
+                  ),
+                  _buildQuickFeatureChip(
+                    title: 'Job Board',
+                    icon: Icons.work_rounded,
+                    gradient: const [Color(0xFF3949AB), Color(0xFF1E88E5)],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const JobsPage()),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             if (_showComposer)
-              Card(
-                margin: const EdgeInsets.all(8.0),
+              Container(
+                margin: const EdgeInsets.fromLTRB(10, 10, 10, 4),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.withOpacity(0.08),
+                      blurRadius: 12,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                  border: Border.all(color: Colors.blue.withOpacity(0.08)),
+                ),
                 child: Padding(
-                  padding: const EdgeInsets.all(8.0),
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1376,55 +1478,96 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                         },
                         child: Row(
                           children: [
-                            CircleAvatar(
-                              radius: 20,
-                              backgroundColor: Colors.grey[300],
-                              backgroundImage: userData?['profile_image'] != null
-                                  ? CachedNetworkImageProvider(userData!['profile_image'])
-                                  : null,
-                              child: userData?['profile_image'] == null
-                                  ? const Icon(Icons.person, size: 20, color: Colors.grey)
-                                  : null,
+                            Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: ThemeController.instance.appBarGradient,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: ThemeController.instance.primaryColor.withOpacity(0.35),
+                                    blurRadius: 6,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: CircleAvatar(
+                                radius: 20,
+                                backgroundColor: Colors.transparent,
+                                backgroundImage: userData?['profile_image'] != null
+                                    ? CachedNetworkImageProvider(userData!['profile_image'])
+                                    : null,
+                                child: userData?['profile_image'] == null
+                                    ? const Icon(Icons.person, size: 20, color: Colors.white)
+                                    : null,
+                              ),
                             ),
                             const SizedBox(width: 10),
-                            Text(
-                              userData?['name'] ?? 'User',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  userData?['name'] ?? 'User',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                ),
+                                const Text(
+                                  'Share something with your network',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
                       const SizedBox(height: 10),
-                      TextField(
-                        controller: _postController,
-                        maxLines: null,
-                        minLines: 1,
-                        decoration: InputDecoration(
-                          hintText: "What's on your mind?",
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(20),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey[50],
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.withOpacity(0.2)),
+                        ),
+                        child: TextField(
+                          controller: _postController,
+                          maxLines: null,
+                          minLines: 2,
+                          decoration: InputDecoration(
+                            hintText: "What's on your mind?",
+                            hintStyle: TextStyle(color: Colors.grey[400], fontSize: 14),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                         ),
                       ),
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 8),
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
                         children: [
-                          IconButton(
-                            icon: const Icon(Icons.photo_library, size: 24),
-                            onPressed: _pickImage,
-                            tooltip: 'Add Photo',
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.smart_display, size: 24),
-                            onPressed: _pickVideo,
-                            tooltip: 'Add Video',
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.send, size: 24),
-                            onPressed: _createPost,
-                            tooltip: 'Post',
+                          _buildComposerAction(Icons.photo_library_outlined, 'Photo', Colors.green, _pickImage),
+                          const SizedBox(width: 6),
+                          _buildComposerAction(Icons.videocam_outlined, 'Video', Colors.red, _pickVideo),
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: _createPost,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                              decoration: BoxDecoration(
+                                gradient: ThemeController.instance.appBarGradient,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: ThemeController.instance.primaryColor.withOpacity(0.35),
+                                    blurRadius: 6,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.send_rounded, size: 14, color: Colors.white),
+                                  SizedBox(width: 5),
+                                  Text('Post', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                                ],
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -1486,6 +1629,96 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                           },
                         ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuickFeatureChip({
+    required String title,
+    required IconData icon,
+    required List<Color> gradient,
+    required VoidCallback onTap,
+    String? badge,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: gradient.first.withOpacity(0.12),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+          border: Border.all(color: gradient.first.withOpacity(0.18)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: gradient),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: Colors.white, size: 14),
+            ),
+            const SizedBox(width: 7),
+            Text(
+              title,
+              style: TextStyle(
+                color: Colors.grey[850],
+                fontWeight: FontWeight.w600,
+                fontSize: 12.5,
+              ),
+            ),
+            if (badge != null) ...[
+              const SizedBox(width: 5),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(colors: [Colors.purple, Colors.deepPurple]),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  badge,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildComposerAction(IconData icon, String label, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 16),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
           ],
         ),
       ),
@@ -1932,4 +2165,88 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
 
   @override
   bool get wantKeepAlive => true;
+}
+
+/// Continuous wave animation across each character of the title
+class WaveAnimatedTitle extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+
+  const WaveAnimatedTitle({
+    super.key,
+    required this.text,
+    required this.style,
+  });
+
+  @override
+  State<WaveAnimatedTitle> createState() => _WaveAnimatedTitleState();
+}
+
+class _WaveAnimatedTitleState extends State<WaveAnimatedTitle> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final characters = widget.text.split('');
+    final count = characters.length;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: List.generate(count, (index) {
+            final char = characters[index];
+            // Continuous left-to-right wave delay
+            final double phase = (index / count) * 2 * math.pi;
+            final double current = (_controller.value * 2 * math.pi) - phase;
+            // Sine wave normalized between 0.0 and 1.0
+            final double waveVal = (math.sin(current) + 1.0) / 2.0;
+            // Smooth bell curve scale up from 1.0 to 1.34
+            final double scale = 1.0 + (waveVal * 0.34);
+            // Slight vertical float with the wave
+            final double translateY = -2.8 * waveVal;
+
+            return Transform.translate(
+              offset: Offset(0, translateY),
+              child: Transform.scale(
+                scale: scale,
+                alignment: Alignment.center,
+                child: Text(
+                  char,
+                  style: widget.style.copyWith(
+                    fontWeight: waveVal > 0.5 ? FontWeight.w900 : FontWeight.bold,
+                    shadows: waveVal > 0.4
+                        ? [
+                            Shadow(
+                              color: Colors.white.withOpacity((waveVal - 0.4) * 1.5),
+                              blurRadius: 6 * waveVal,
+                            ),
+                          ]
+                        : null,
+                  ),
+                ),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
 }

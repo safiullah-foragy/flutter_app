@@ -1,50 +1,82 @@
 package com.example.myapp
 
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.app.NotificationManager
-import android.os.Build
-import androidx.core.content.ContextCompat
+import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 
+/**
+ * Handles Accept and Decline actions from incoming call heads-up notifications.
+ * Also handles cancelling the IncomingCallActivity via broadcast.
+ */
 class CallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
-        val sessionId = intent.getStringExtra("call_session_id") ?: return
+        val sessionId = intent.getStringExtra("call_session_id") ?: ""
         val channel = intent.getStringExtra("call_channel") ?: ""
         val callerId = intent.getStringExtra("caller_id") ?: ""
+        val callerName = intent.getStringExtra("caller_name") ?: callerId
         val isVideo = intent.getBooleanExtra("video", false)
-        val calleeId = intent.getStringExtra("callee_id")
+        val calleeId = intent.getStringExtra("callee_id") ?: ""
+
+        val pendingResult = goAsync()
 
         try { FirebaseApp.initializeApp(context) } catch (_: Throwable) {}
         val db = FirebaseFirestore.getInstance()
 
         when (action) {
             ACTION_ACCEPT -> {
-                // Update session to accepted and open the app's call UI
-                db.collection("call_sessions").document(sessionId)
-                    .update(mapOf("status" to "accepted", "accepted_at" to System.currentTimeMillis()))
-                    .addOnCompleteListener {
-                        // Launch main activity to open Call UI
-                        val open = Intent(context, MainActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                            putExtra("call_channel", channel)
-                            putExtra("caller_id", callerId)
-                            putExtra("video", isVideo)
-                        }
-                        ContextCompat.startActivity(context, open, null)
-                        stopRinging(context)
-                    }
+                stopRinging(context)
+
+                if (sessionId.isNotEmpty()) {
+                    db.collection("call_sessions").document(sessionId)
+                        .set(hashMapOf<String, Any>(
+                            "status" to "accepted",
+                            "accepted_at" to System.currentTimeMillis()
+                        ), SetOptions.merge())
+                }
+
+                // Launch MainActivity with auto-accept to open Flutter call UI
+                val open = Intent(context, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    putExtra("call_channel", channel)
+                    putExtra("caller_id", callerId)
+                    putExtra("caller_name", callerName)
+                    putExtra("video", isVideo)
+                    putExtra("call_session_id", sessionId)
+                    putExtra("auto_accept_call", true)
+                }
+                try { context.startActivity(open) } catch (e: Throwable) {
+                    Log.e("CallActionReceiver", "Failed to start activity", e)
+                }
+                pendingResult.finish()
             }
             ACTION_DECLINE -> {
-                val updates = mutableMapOf<String, Any>("status" to "rejected", "ended_at" to System.currentTimeMillis())
-                if (!calleeId.isNullOrEmpty()) updates["ended_by"] = calleeId
-                db.collection("call_sessions").document(sessionId)
-                    .update(updates)
-                    .addOnCompleteListener { stopRinging(context) }
+                stopRinging(context)
+
+                if (sessionId.isNotEmpty()) {
+                    val updates = hashMapOf<String, Any>(
+                        "status" to "rejected",
+                        "ended_at" to System.currentTimeMillis()
+                    )
+                    if (calleeId.isNotEmpty()) updates["ended_by"] = calleeId
+                    db.collection("call_sessions").document(sessionId)
+                        .set(updates, SetOptions.merge())
+                        .addOnCompleteListener { pendingResult.finish() }
+                } else {
+                    pendingResult.finish()
+                }
+
+                // Tell IncomingCallActivity to close (in case it's showing)
+                val cancelBroadcast = Intent(IncomingCallActivity.ACTION_CANCEL_INCOMING_CALL)
+                cancelBroadcast.setPackage(context.packageName)
+                context.sendBroadcast(cancelBroadcast)
             }
+            else -> pendingResult.finish()
         }
     }
 
