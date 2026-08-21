@@ -36,6 +36,19 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script>
+    // Clean up any old corrupted Firestore IndexedDB cache from prior sessions
+    if (window.indexedDB && indexedDB.databases) {
+      indexedDB.databases().then(function(dbs) {
+        dbs.forEach(function(db) {
+          if (db.name && db.name.indexOf('firestore') !== -1) {
+            console.log('Clearing corrupt Firestore IndexedDB:', db.name);
+            indexedDB.deleteDatabase(db.name);
+          }
+        });
+      }).catch(function(e) {});
+    }
+  </script>
   <script src="flutter_bootstrap.js" async></script>
   
   <!-- Agora Web SDK must load before Flutter needs it -->
@@ -50,6 +63,51 @@
         console.error('Agora Web SDK failed to load!');
       }
     });
+
+    // Native JS Helper functions for 100% reliable Agora WebRTC execution
+    window.agoraCreateTracks = async function(enableVideo) {
+      console.log('Agora JS: creating tracks with enableVideo=' + enableVideo);
+      if (enableVideo) {
+        return await AgoraRTC.createMicrophoneAndCameraTracks(
+          { encoderConfig: "speech_standard", AEC: true, ANS: true, AGC: true },
+          { encoderConfig: "480p_1", facingMode: "user" }
+        );
+      } else {
+        const audioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+          encoderConfig: "speech_standard",
+          AEC: true,
+          ANS: true,
+          AGC: true
+        });
+        return [audioTrack, null];
+      }
+    };
+
+    window.agoraPublishTracks = async function(client, audioTrack, videoTrack) {
+      var tracks = [];
+      if (audioTrack) tracks.push(audioTrack);
+      if (videoTrack) tracks.push(videoTrack);
+      console.log('Agora JS: Publishing ' + tracks.length + ' tracks to channel...');
+      await client.publish(tracks);
+      console.log('Agora JS: Tracks published successfully!');
+    };
+
+    window.agoraPlayRemoteTrack = async function(client, user, mediaType, containerId) {
+      console.log('Agora JS: Subscribing to user ' + user.uid + ' for ' + mediaType);
+      const track = await client.subscribe(user, mediaType);
+      console.log('Agora JS: Subscribed to ' + mediaType + ' track:', track);
+      if (mediaType === 'video') {
+        if (containerId) {
+          const el = document.getElementById(containerId);
+          if (el) el.style.display = 'block';
+          track.play(containerId);
+        }
+      } else if (mediaType === 'audio') {
+        try { track.setVolume(100); } catch(e) {}
+        track.play();
+      }
+      return track;
+    };
   </script>
 </body>
 </html>
