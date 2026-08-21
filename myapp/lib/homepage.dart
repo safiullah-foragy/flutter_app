@@ -25,6 +25,7 @@ import 'cv_generator_page.dart';
 import 'live_stream_page.dart';
 import 'inline_live_widget.dart';
 import 'livekit_inline_live_widget.dart';
+import 'virtual_meetings_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -1375,6 +1376,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin, Auto
                     );
                   }),
                 ],
+              ),
+              ListTile(
+                leading: const Icon(Icons.video_call_rounded, color: Colors.purple),
+                title: const Text('Virtual Meeting'),
+                onTap: () {
+                  Navigator.of(context).pop(); // close drawer first
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => VirtualMeetingsPage(userData: userData)),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.description),

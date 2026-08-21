@@ -29,6 +29,7 @@ import 'theme_controller.dart';
 import 'live_stream_page.dart';
 import 'inline_live_widget.dart';
 import 'livekit_inline_live_widget.dart';
+import 'virtual_meetings_page.dart';
 
 class NewsfeedPage extends StatefulWidget {
   const NewsfeedPage({super.key});
@@ -1464,6 +1465,16 @@ class _NewsfeedPageState extends State<NewsfeedPage> with TickerProviderStateMix
                 physics: const BouncingScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 children: [
+                  _buildQuickFeatureChip(
+                    title: 'Virtual Meeting',
+                    icon: Icons.video_call_rounded,
+                    gradient: const [Color(0xFF6A1B9A), Color(0xFF4A148C)],
+                    badge: 'LIVE',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => VirtualMeetingsPage(userData: userData)),
+                    ),
+                  ),
                   _buildQuickFeatureChip(
                     title: 'CV Generator',
                     icon: Icons.description_rounded,
